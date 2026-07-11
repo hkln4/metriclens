@@ -174,7 +174,3 @@ classification, a passing pytest suite (`pytest -q`).
 - **Sample-size-aware thresholds / confidence on findings.**
 - **More rules** (classification leakage, temporal/time-based split,
   high-cardinality categoricals, label-noise estimate).
-
-## License
-
-MIT.

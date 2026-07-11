@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "metriclens"
+version = "0.0.0"
+description = "Data-aware evaluation roadmaps: which metrics matter for your data, and why."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# Core dependencies are kept deliberately minimal. A library forces every one of
+# these on its users, so only what the deterministic core genuinely needs lives
+# here. Pins are loose lower-bounds, never exact — exact pins belong to
+# applications, not libraries.
+dependencies = [
+    "pydantic>=2",
+    "numpy>=1.21",
+    "pandas>=1.5",
+]
+
+[project.optional-dependencies]
+# LLM enrichment is opt-in. The anthropic SDK is never imported at module top
+# level (see llm/anthropic.py), so `import metriclens` works without this extra.
+llm = ["anthropic>=0.40"]
+# Reserved for the first multi-modality extension.
+image = ["pillow>=9"]
+dev = ["pytest>=7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["metriclens"]
