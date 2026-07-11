@@ -157,6 +157,50 @@ warning **did not** hold, rather than rubber-stamping the roadmap.
 
 ---
 
+## Case studies
+
+`examples/case_studies.py` runs three end-to-end studies on real datasets and
+prints a before/after table for each. Every number below is computed by that
+script — run `python examples/case_studies.py` to reproduce (fixed seeds, so the
+numbers are stable). Nothing here is hardcoded.
+
+**1 — Skewed target** (California Housing, `HistGradientBoostingRegressor`).
+`target_skew` fires (skew=0.978, outlier_fraction=0.052). Following the roadmap's
+log-transform recommendation:
+
+| | naive (raw target) | roadmap-guided (log) |
+|---|---|---|
+| MAE | 0.3121 | **0.3078** (+1.4%) |
+| RMSE | 0.4669 | 0.4721 |
+| R² | 0.8363 | 0.8326 |
+
+Modest but real: it improves MAE (the metric the roadmap prioritizes) while RMSE
+and R² stay flat. `review()` is honest here — for this strong model the
+"large errors dominate" warning **did not hold** on the naive fit, so the tool
+does not rubber-stamp its own skew warning.
+
+**2 — Duplicate-row leakage** (Breast Cancer, 20% of rows duplicated,
+`RandomForestClassifier`). `duplicate_rows` fires (duplicate_fraction=0.166, 113
+duplicated rows). Duplicates leaking across CV folds inflate accuracy:
+
+| CV accuracy (naive, duplicated) | after de-duplication |
+|---|---|
+| 0.9736 | 0.9579 |
+
+**+1.57 accuracy points** of inflation removed by following the recommendation.
+
+**3 — Target leakage** (Diabetes + an injected feature = target + small noise,
+`LinearRegression`). `target_leakage` fires **[critical]** at |r|=1.0000:
+
+| CV R² (with leaked feature) | after removing it |
+|---|---|
+| 0.9999 | 0.4892 |
+
+A near-perfect **0.9999 R²** collapses to an honest **0.489** — **+51.1 points**
+of apparent skill that was pure leakage.
+
+---
+
 ## Status
 
 **Working today:** tabular profiling, the 11 rules above, three-section render
