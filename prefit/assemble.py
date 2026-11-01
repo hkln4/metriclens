@@ -85,7 +85,7 @@ def build_limitations(report_like: dict[str, Any]) -> list[str]:
 
 def load_track_record() -> dict[str, Any]:
     try:
-        text = resources.files("metriclens").joinpath("data/track_record.json").read_text(encoding="utf-8")
+        text = resources.files("prefit").joinpath("data/track_record.json").read_text(encoding="utf-8")
     except (FileNotFoundError, ModuleNotFoundError, OSError):
         return {}
     return json.loads(text)

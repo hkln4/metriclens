@@ -19,7 +19,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold, cross_val_predict, cross_val_score
 
-import metriclens as ml
+import prefit as pf
 
 
 def _stop(msg: str) -> None:
@@ -51,7 +51,7 @@ def _table(title: str, subtitle: str, rows: list[tuple[str, str, str]],
 def case1() -> dict:
     df = fetch_california_housing(as_frame=True).frame
     # holdout=None: these studies run their own CV on the full data
-    report = ml.analyze(df, target="MedHouseVal", task="regression", holdout=None)
+    report = pf.analyze(df, target="MedHouseVal", task="regression", holdout=None)
     fnd = _finding(report, "target_skew")
     if fnd is None:
         _stop("case 1: expected 'target_skew' to fire on California Housing.")
@@ -78,8 +78,8 @@ def case1() -> dict:
     r2_g = r2_score(y, pred_guided)
     rel = (mae_n - mae_g) / mae_n * 100
 
-    rev_n = ml.review(y, pred_naive, report)
-    rev_g = ml.review(y, pred_guided, report)
+    rev_n = pf.review(y, pred_naive, report)
+    rev_g = pf.review(y, pred_guided, report)
     held_n = next(c.held for c in rev_n.checks if c.finding_id)
     held_g = next(c.held for c in rev_g.checks if c.finding_id)
     verdict = {True: "HELD", False: "did not hold", None: "n/a"}
@@ -106,7 +106,7 @@ def case2() -> dict:
     dup = rng.choice(len(df), size=int(0.2 * len(df)), replace=False)
     corrupt = pd.concat([df, df.iloc[dup]], ignore_index=True)
 
-    report = ml.analyze(corrupt, target="target", task="classification", holdout=None)
+    report = pf.analyze(corrupt, target="target", task="classification", holdout=None)
     fnd = _finding(report, "duplicate_rows")
     if fnd is None:
         _stop("case 2: expected 'duplicate_rows' to fire on the corrupted copy.")
@@ -143,7 +143,7 @@ def case3() -> dict:
     leaked = df.copy()
     leaked["leaky"] = leaked["target"] + noise  # |r| ~ 0.9999
 
-    report = ml.analyze(leaked, target="target", task="regression", holdout=None)
+    report = pf.analyze(leaked, target="target", task="regression", holdout=None)
     fnd = _finding(report, "leakage_hint")
     if fnd is None:
         _stop("case 3: expected 'leakage_hint' to fire on the injected feature.")

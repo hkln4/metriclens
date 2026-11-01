@@ -2,10 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metriclens.enums import ColumnKind, Task
-from metriclens.profiling.kinds import infer_kind
-from metriclens.profiling.stats import excess_kurtosis, single_feature_score, skewness, wilson_ci
-from metriclens.profiling.task_inference import infer_task
+from prefit.enums import ColumnKind, Task
+from prefit.profiling.kinds import infer_kind
+from prefit.profiling.stats import excess_kurtosis, single_feature_score, skewness, wilson_ci
+from prefit.profiling.task_inference import infer_task
 
 rng = np.random.default_rng(0)
 N = 500

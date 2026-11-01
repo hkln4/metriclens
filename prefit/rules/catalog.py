@@ -38,7 +38,7 @@ def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                     f"Task inferred as {p.task.value} ({te.get('reason')}).", [e], [p.target.name])
     contextual(out, ctx, qid="task", question=f"Is this a {p.task.value} task?",
                options=[(p.task.value, f"Yes, {p.task.value}", "keeps the current analysis"),
-                        (other.value, f"No, {other.value}", f"re-run ml.analyze(..., task='{other.value}')")],
+                        (other.value, f"No, {other.value}", f"re-run pf.analyze(..., task='{other.value}')")],
                confirm=p.task.value, decision_id="task", title=f"Treat the task as {p.task.value}",
                stage="split", action=f"Analyze and evaluate as a {p.task.value} problem.",
                rationale=f"Inferred from the target: {te.get('reason')}.",
@@ -129,7 +129,7 @@ def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                    "reserved before profiling; never read by rules or experiments")
         out.decision("holdout", "Evaluate on the holdout once, at the end", DecisionClass.PROCEDURAL,
                      "final", "Use report.holdout(df) to get the holdout; score the final model on it once.",
-                     "Every metriclens decision was made on the dev rows only, so the holdout is an "
+                     "Every prefit decision was made on the dev rows only, so the holdout is an "
                      "unbiased check of the final model.",
                      risk="Re-using the holdout to choose between models turns it into a second dev set.",
                      evidence_ids=[e], do="Score the final model on report.holdout(df) once, at the end.")
@@ -138,17 +138,17 @@ def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                    "registered with report.register_external_holdout; metadata only, never profiled")
         out.decision("holdout", f"Evaluate on the {ext['name']} once, at the end", DecisionClass.PROCEDURAL,
                      "final", f"Score the final model on the {ext['name']} once.",
-                     "Metriclens did not reserve an internal holdout; the analysis ran on the frame you passed, "
+                     "Prefit did not reserve an internal holdout; the analysis ran on the frame you passed, "
                      f"and the registered {ext['name']} ({ext['n_rows']} rows) was kept out of it.",
                      risk="Re-using it to choose between models turns it into a second dev set.", evidence_ids=[e])
     else:
         e = out.ev("holdout", "Internal holdout", "none", h.get("reason", ""))
-        out.decision("holdout", "Metriclens did not reserve an internal holdout", DecisionClass.PROCEDURAL,
+        out.decision("holdout", "Prefit did not reserve an internal holdout", DecisionClass.PROCEDURAL,
                      "final",
-                     "Keep a test set out of this analysis yourself (ml.split before ml.analyze) and register it with "
+                     "Keep a test set out of this analysis yourself (pf.split before pf.analyze) and register it with "
                      "report.register_external_holdout(test_df); without one, estimate final performance with nested "
                      "cross-validation.",
-                     f"Metriclens did not reserve an internal holdout ({h.get('reason', '')}). If you split off a test "
+                     f"Prefit did not reserve an internal holdout ({h.get('reason', '')}). If you split off a test "
                      "set before calling analyze, register it so the report records it.",
                      risk="Scores from the same CV used to make decisions are optimistic.", evidence_ids=[e],
                      do="Register your test set, or use nested CV for the final estimate.")
@@ -201,7 +201,7 @@ def temporal_order(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                     [e], dts)
     contextual(out, ctx, qid="temporal", question=(
         f"Will the model predict future rows from past ones (time order matters for {dts[0]})?"),
-        options=[("yes", "Yes, predict the future", f"re-run ml.analyze(..., time_col='{dts[0]}') for a time-ordered holdout and TimeSeriesSplit"),
+        options=[("yes", "Yes, predict the future", f"re-run pf.analyze(..., time_col='{dts[0]}') for a time-ordered holdout and TimeSeriesSplit"),
                  ("no", "No, rows are exchangeable", "keep random cross-validation")],
         confirm="yes", decision_id="temporal", title="Split by time", stage="split",
         action=f"Re-run with time_col='{dts[0]}' so the holdout is the latest period and CV uses TimeSeriesSplit.",
@@ -274,7 +274,7 @@ def duplicate_rows(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  "repeats." + hint,
                  "Copies on both sides of a split leak the answer and inflate validation scores.",
                  risk="Dropping legitimate repeats changes the data distribution; keeping artefacts inflates scores. "
-                      "metriclens does not decide this for you.",
+                      "prefit does not decide this for you.",
                  finding_ids=[f], evidence_ids=[e], why=f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}) can land on both sides of a split.", do="Decide whether they are the same record or legitimate repeats.")
 
 
@@ -407,7 +407,7 @@ def unsupported_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  f"{cols} are not in the exported feature matrix because v1 has no encoder for raw datetimes, "
                  "free text or string identifiers. If they matter, derive features yourself (date parts, elapsed "
                  "time, text vectors, entity statistics) and re-run.",
-                 "Unsupported in v1 is a capability limit of metriclens, not a judgement that these columns are "
+                 "Unsupported in v1 is a capability limit of prefit, not a judgement that these columns are "
                  "uninformative; dates and text are often among the strongest signals.",
                  risk="Leaving them out can cost real signal. If one identifies an entity with repeated rows, pass it "
                       "as groups=; if one orders rows in time, pass it as time_col=.",
@@ -654,6 +654,6 @@ def zero_inflation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                     f"{z:.0%} of target values are exactly zero (zero-inflated).", [e], [p.target.name])
     out.decision("zero_inflation", "Consider a two-part or Tweedie model", DecisionClass.REVIEW, "target",
                  "Evaluate zero-vs-positive and the size of positives separately, or try a Tweedie/Poisson loss. "
-                 "metriclens does not test model families.",
+                 "prefit does not test model families.",
                  "A single regressor tends to predict small positive values everywhere on zero-inflated targets.",
                  finding_ids=[f], evidence_ids=[e])

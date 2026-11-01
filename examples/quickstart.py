@@ -1,4 +1,4 @@
-"""End-to-end metriclens flow on California Housing.
+"""End-to-end prefit flow on California Housing.
 
     python examples/quickstart.py
 
@@ -18,7 +18,7 @@ from pathlib import Path
 from sklearn.datasets import fetch_california_housing
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-import metriclens as ml
+import prefit as pf
 
 OUT = Path(__file__).parent / "output"
 TARGET = "MedHouseVal"
@@ -28,14 +28,14 @@ def main() -> None:
     df = fetch_california_housing(as_frame=True).frame
     model = HistGradientBoostingRegressor(random_state=0)
 
-    dev_df, test_df = ml.split(df, TARGET, test_size=0.2, strategy="random", random_state=0)
+    dev_df, test_df = pf.split(df, TARGET, test_size=0.2, strategy="random", random_state=0)
 
-    report = ml.analyze(dev_df, target=TARGET, estimator=model,
+    report = pf.analyze(dev_df, target=TARGET, estimator=model,
                         context="house-price estimates used to prioritise field appraisals")
     print(report)                                            # roadmap + open questions
 
     report = report.answer({"task": "regression", "metric_priority": "typical_error"})
-    report = report.verify(dev_df, budget=ml.Budget(max_experiments=4))
+    report = report.verify(dev_df, budget=pf.Budget(max_experiments=4))
     report = report.register_external_holdout(test_df, dev_df=dev_df, name="test set")
 
     built = report.export()
@@ -44,7 +44,7 @@ def main() -> None:
     fitted = built.model.fit(dev_df[built.feature_columns], dev_df[TARGET])
     pred = fitted.predict(test_df[built.feature_columns])
     age = test_df["HouseAge"].gt(30).map({True: "older than 30y", False: "30y or newer"}).rename("house_age")
-    rev = ml.review(test_df[TARGET], pred, report, segments=age)
+    rev = pf.review(test_df[TARGET], pred, report, segments=age)
     print(rev)
 
     OUT.mkdir(exist_ok=True)

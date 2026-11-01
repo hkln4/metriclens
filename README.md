@@ -1,8 +1,8 @@
-# metriclens
+# prefit
 
 **Decision-driven EDA for tabular supervised learning.**
 
-Point `metriclens` at your development data before you train. It profiles the
+Point `prefit` at your development data before you train. It profiles the
 data, turns what it measures into a short list of *decisions* — how to split,
 which columns to question, what to preprocess, which metric to trust — and shows
 the evidence, threshold and uncertainty behind every one. Decisions that depend
@@ -14,9 +14,9 @@ It is not AutoML: it does not choose a model or tune hyperparameters, and it
 never applies an unconfirmed assumption silently.
 
 ```bash
-pip install -e ".[verify]"        # core + experiments/export (scikit-learn, scipy)
-pip install -e ".[verify,report]" # + plotly, for fully offline HTML reports
-pip install -e ".[llm]"           # optional LLM interpretation (Anthropic)
+pip install "prefit[verify]"        # core + experiments/export (scikit-learn, scipy)
+pip install "prefit[verify,report]" # + plotly, for fully offline HTML reports
+pip install "prefit[llm]"           # optional LLM interpretation (Anthropic)
 ```
 
 The core (`pandas`, `numpy`, `pydantic`) profiles, decides and renders reports
@@ -27,16 +27,16 @@ with no scikit-learn, no network and no API key.
 ## Quickstart
 
 ```python
-import metriclens as ml
+import prefit as pf
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 model = HistGradientBoostingRegressor(random_state=0)
 
 # 1. set the test data aside before anything is computed
-dev_df, test_df = ml.split(df, target="price", test_size=0.2, strategy="random", random_state=42)
+dev_df, test_df = pf.split(df, target="price", test_size=0.2, strategy="random", random_state=42)
 
 # 2. analyze the development data only
-report = ml.analyze(dev_df, target="price", estimator=model)
+report = pf.analyze(dev_df, target="price", estimator=model)
 report                                   # notebook: a short summary card with the next step
 print(report)                            # roadmap: one line of why / do per decision
 report.to_html("report.html")            # the full report
@@ -52,22 +52,22 @@ print(built.describe())                  # what is in, what is out, and why
 fitted = built.model.fit(dev_df[built.feature_columns], dev_df["price"])
 
 # 5. once, at the end, on the untouched test data
-review = ml.review(test_df["price"], fitted.predict(test_df[built.feature_columns]), report)
+review = pf.review(test_df["price"], fitted.predict(test_df[built.feature_columns]), report)
 report.to_html("report.html", review=review)
 ```
 
-Shortcut: `ml.analyze(df, target, holdout=0.2)` sets the holdout aside itself,
+Shortcut: `pf.analyze(df, target, holdout=0.2)` sets the holdout aside itself,
 before profiling; `dev_df, test_df = report.holdout(df)` gives it back. Without
 `holdout=`, `analyze` never splits — the default is `holdout=None`.
 
 From the shell:
 
 ```bash
-metriclens report dev.csv --target price --verify --answer metric_priority=typical_error --out report.html
+prefit report dev.csv --target price --verify --answer metric_priority=typical_error --out report.html
 ```
 
 An example report produced by `examples/quickstart.py` is in
-[`examples/output/california_report.html`](examples/output/california_report.html).
+[`examples/output/california_report.html`](https://github.com/hkln4/prefit/blob/main/examples/output/california_report.html).
 
 ---
 
@@ -82,7 +82,7 @@ report.target; report.task
 # flow (each returns a new revision; the old report is unchanged)
 report.answer({...}); report.verify(df); report.interpret(llm)
 report.register_external_holdout(test_df, dev_df=dev_df)
-report.export(estimator); report.holdout(df); ml.review(...)
+report.export(estimator); report.holdout(df); pf.review(...)
 
 # automation
 report.decisions; report.decision(id); report.questions; report.experiments
@@ -101,7 +101,7 @@ and any experiment result.
 read-only, all the way down. `answer`, `verify`, `interpret` and
 `register_external_holdout` return a new report whose
 `details.manifest.revision` is incremented and whose `history` records the step.
-`ml.load_report(path)` reloads a report saved with `to_json`.
+`pf.load_report(path)` reloads a report saved with `to_json`.
 
 **The data is checked, never trusted.** A report stores no rows, so `verify`
 and `holdout` take the DataFrame again. Its fingerprint — SHA-256 digests of the
@@ -223,9 +223,9 @@ works offline either way.
 ## Optional LLM interpretation
 
 ```python
-report.llm_payload(ml.LLMConfig(share_column_names=False))   # inspect first
-report = report.interpret(ml.LLMConfig(provider="anthropic"))
-report = report.interpret(ml.LLMConfig(provider="local", model="llama3.1"))  # Ollama etc.
+report.llm_payload(pf.LLMConfig(share_column_names=False))   # inspect first
+report = report.interpret(pf.LLMConfig(provider="anthropic"))
+report = report.interpret(pf.LLMConfig(provider="local", model="llama3.1"))  # Ollama etc.
 ```
 
 The LLM receives only the computed report — never rows, never category labels —
@@ -245,7 +245,7 @@ the live APIs in this repository's tests.
 
 ## After training
 
-`ml.review(y_true, y_pred, report, y_score=..., segments=...)` checks the
+`pf.review(y_true, y_pred, report, y_score=..., segments=...)` checks the
 roadmap's hypotheses against real errors, each against an explicit reference
 (e.g. "tails dominate" vs. what Gaussian errors would give), adds residual /
 confusion / precision–recall / segment analysis, and lists every assumption
@@ -289,5 +289,5 @@ often a decision improves a model.
 - `groups` and `time_col` cannot be combined in v1.
 - Raw datetime, free-text and string-identifier columns are not encoded.
 
-Design notes: [ARCHITECTURE.md](ARCHITECTURE.md) · changes: [CHANGELOG.md](CHANGELOG.md) ·
-contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+Design notes: [ARCHITECTURE.md](https://github.com/hkln4/prefit/blob/main/ARCHITECTURE.md) · changes: [CHANGELOG.md](https://github.com/hkln4/prefit/blob/main/CHANGELOG.md) ·
+contributing: [CONTRIBUTING.md](https://github.com/hkln4/prefit/blob/main/CONTRIBUTING.md)

@@ -2,35 +2,35 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import metriclens as ml
-from metriclens.enums import Task
-from metriclens.guard import reserve_holdout
+import prefit as pf
+from prefit.enums import Task
+from prefit.guard import reserve_holdout
 
 
 def test_misspelled_target_raises_with_suggestion(reg_df):
     with pytest.raises(KeyError, match="Did you mean"):
-        ml.analyze(reg_df, target="yy")
+        pf.analyze(reg_df, target="yy")
 
 
 def test_unknown_keyword_is_rejected(reg_df):
     with pytest.raises(TypeError):
-        ml.analyze(reg_df, target="y", taks="regression")
+        pf.analyze(reg_df, target="y", taks="regression")
 
 
 def test_non_dataframe_rejected():
     with pytest.raises(TypeError):
-        ml.analyze([1, 2, 3], target="x")
+        pf.analyze([1, 2, 3], target="x")
 
 
 def test_groups_wrong_length(reg_df):
     with pytest.raises(ValueError, match="groups"):
-        ml.analyze(reg_df, target="y", groups=np.arange(10))
+        pf.analyze(reg_df, target="y", groups=np.arange(10))
 
 
 def test_empty_target_rejected():
     df = pd.DataFrame({"a": [1, 2], "y": [np.nan, np.nan]})
     with pytest.raises(ValueError):
-        ml.analyze(df, target="y")
+        pf.analyze(df, target="y")
 
 
 def test_holdout_is_stratified_and_disjoint(imb_df):
@@ -55,13 +55,13 @@ def test_holdout_keeps_groups_whole(reg_df):
 def test_small_data_skips_holdout():
     rng = np.random.default_rng(0)
     df = pd.DataFrame({"a": rng.normal(size=150), "y": rng.normal(size=150)})
-    rep = ml.analyze(df, target="y", holdout=0.2)
+    rep = pf.analyze(df, target="y", holdout=0.2)
     assert rep.details.profile.holdout["used"] is False
-    assert rep.decision("d.holdout").title == "Metriclens did not reserve an internal holdout"
+    assert rep.decision("d.holdout").title == "Prefit did not reserve an internal holdout"
 
 
 def test_profile_never_sees_holdout_rows(reg_df):
-    rep = ml.analyze(reg_df, target="y", holdout=0.25)
+    rep = pf.analyze(reg_df, target="y", holdout=0.25)
     assert rep.details.profile.dataset.n_rows == len(reg_df) - rep.details.profile.holdout["n_holdout"]
     dev, hold = rep.holdout(reg_df)
     assert len(dev) == rep.details.profile.dataset.n_rows and len(hold) == rep.details.profile.holdout["n_holdout"]

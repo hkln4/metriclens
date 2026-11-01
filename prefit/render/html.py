@@ -149,7 +149,7 @@ JS = r"""
     if(x && typeof x==='object'){var o={}; for(var k in x){o[k]=resolve(x[k]);} return o;}
     return x;
   }
-  var specs = JSON.parse(document.getElementById('ml-figures').textContent);
+  var specs = JSON.parse(document.getElementById('prefit-figures').textContent);
   function draw(){
     if(typeof Plotly==='undefined'){document.body.classList.add('noplot');
       document.querySelectorAll('.fig details.data').forEach(function(d){d.open=true;}); return;}
@@ -313,7 +313,7 @@ def summary_card(r: Any) -> str:
     c = summary_counts(r)
     att = "".join(f"<li>{status_badge(d.status)} {esc(d.title)}</li>" for d in attention(r)[:8])
     return (f'<div style="font:14px/1.5 system-ui,sans-serif;border:1px solid #ccc;border-radius:10px;padding:12px">'
-            f"<b>metriclens report · {esc(r.target)}</b> (revision {r.details.manifest.revision})<br>"
+            f"<b>prefit report · {esc(r.target)}</b> (revision {r.details.manifest.revision})<br>"
             f"{esc(headline(r))}<br><b>Next step:</b> {esc(next_step(r))}"
             + (f"<br><b>Needs your attention</b><ul style='margin:4px 0'>{att}</ul>" if att else "")
             + f"<span style='color:#666'>{c['questions']} open question(s) · print(report) for the roadmap · "
@@ -332,7 +332,7 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
     if ctx.time_col:
         chips.append(f"time: {ctx.time_col}")
 
-    out = [f'<section id="summary"><h1>metriclens report · {esc(r.target)}</h1><div class="chips">'
+    out = [f'<section id="summary"><h1>prefit report · {esc(r.target)}</h1><div class="chips">'
            + "".join(f'<span class="chip">{esc(x)}</span>' for x in chips) + "</div>"
            + '<div class="tiles">'
            f'<div class="tile"><b>{c["questions"]}</b><span>questions awaiting your answer</span></div>'
@@ -436,7 +436,7 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
                  "single-feature 2-fold CV score"], crow, raw=True) + "</details>")
     m = d.manifest
     out.append("<details id=\"manifest\"><summary>Manifest and history</summary>"
-               + table(["field", "value"], [["metriclens", m.metriclens_version], ["python", m.python],
+               + table(["field", "value"], [["prefit", m.prefit_version], ["python", m.python],
                                             ["packages", m.packages], ["seed", m.seed],
                                             ["rule versions", m.rule_versions], ["profile options", m.profile_options],
                                             ["budget", m.budget], ["benchmark manifest", m.benchmark],
@@ -459,7 +459,7 @@ def shell(title: str, body: str, figures: dict[str, Any], plotlyjs: str, nav: li
         try:
             from plotly.offline import get_plotlyjs
         except ImportError as exc:
-            raise ImportError("plotlyjs='inline' needs the plotly package: pip install 'metriclens[report]'") from exc
+            raise ImportError("plotlyjs='inline' needs the plotly package: pip install 'prefit[report]'") from exc
         script = f"<script>{get_plotlyjs()}</script>"
     elif plotlyjs == "none":
         script = ""
@@ -471,7 +471,7 @@ def shell(title: str, body: str, figures: dict[str, Any], plotlyjs: str, nav: li
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{esc(title)}</title><style>{CSS}</style>{script}</head><body><main>"
             f"<nav aria-label=\"sections\">{nav_html}</nav>{body}</main>"
-            f'<script type="application/json" id="ml-figures">{data}</script><script>{JS}</script></body></html>')
+            f'<script type="application/json" id="prefit-figures">{data}</script><script>{JS}</script></body></html>')
 
 
 def render_report_html(r: Any, review: Any = None, plotlyjs: str = "cdn") -> str:
@@ -481,4 +481,4 @@ def render_report_html(r: Any, review: Any = None, plotlyjs: str = "cdn") -> str
         idx = body.index('<section id="details"')
         body = body[:idx] + rb + body[idx:]
         figs.update(rf)
-    return shell(f"metriclens · {r.target}", body, figs, plotlyjs)
+    return shell(f"prefit · {r.target}", body, figs, plotlyjs)

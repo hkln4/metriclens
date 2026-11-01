@@ -1,8 +1,8 @@
 {
   "manifest_version": "2026.11-2",
-  "metriclens_version": "0.1.0",
+  "prefit_version": "0.1.0",
   "python": "3.13.1",
-  "protocol": "Each case runs ml.analyze with default options and seed 0. A check passes when the rule's finding matches the expectation: fired / none / uncertain (near threshold).",
+  "protocol": "Each case runs pf.analyze with default options and seed 0. A check passes when the rule's finding matches the expectation: fired / none / uncertain (near threshold).",
   "cases": [
     {
       "case": "clean_regression",
@@ -578,7 +578,7 @@
   "verification": [
     {
       "dataset": "sklearn:load_breast_cancer",
-      "seconds": 10.0,
+      "seconds": 12.7,
       "dev_metric": "accuracy",
       "decisions": {
         "d.power_transform": "inconclusive"
@@ -610,14 +610,14 @@
     },
     {
       "dataset": "sklearn:load_diabetes",
-      "seconds": 3.1,
+      "seconds": 3.6,
       "dev_metric": "neg_mean_absolute_error",
       "decisions": {},
       "experiments": []
     },
     {
       "dataset": "sklearn:load_wine",
-      "seconds": 2.8,
+      "seconds": 3.2,
       "dev_metric": "accuracy",
       "decisions": {},
       "experiments": []

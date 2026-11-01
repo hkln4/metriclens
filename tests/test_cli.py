@@ -1,4 +1,4 @@
-from metriclens.cli import main
+from prefit.cli import main
 
 
 def test_cli_writes_report(tmp_path, messy_df, capsys):
@@ -9,4 +9,4 @@ def test_cli_writes_report(tmp_path, messy_df, capsys):
     rc = main(["report", str(csv), "--target", "y", "--out", str(out), "--json", str(js),
                "--answer", "metric_priority=symmetric", "--plotlyjs", "none"])
     assert rc == 0 and out.exists() and js.exists()
-    assert "METRICLENS REPORT" in capsys.readouterr().out
+    assert "PREFIT REPORT" in capsys.readouterr().out

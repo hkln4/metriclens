@@ -6,13 +6,13 @@
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q                      # tests (includes the benchmark cases)
-ruff check . && mypy metriclens
+ruff check . && mypy prefit
 python benchmarks/run.py       # refreshes benchmarks/results and the track record
 ```
 
 ## Adding or changing a rule
 
-1. Write the rule in `metriclens/rules/catalog.py` with
+1. Write the rule in `prefit/rules/catalog.py` with
    `@rule("id", "1", thresholds={...})`. Compare statistics with `trigger()` and
    pass the statistic's interval so near-threshold cases become `uncertain`.
 2. Choose the decision class honestly:
@@ -41,3 +41,13 @@ every report's manifest.
 
 Keep the deterministic core free of new hard dependencies. Tests, ruff and mypy
 must pass; coverage must stay above the configured floor.
+
+## Releasing
+
+Publishing runs in GitHub Actions with PyPI Trusted Publishing (no tokens).
+
+1. Bump `version` in `pyproject.toml` and `prefit/_version.py`, add a CHANGELOG entry, merge to `main`.
+2. Optional dry run: Actions → Release → Run workflow → `target=testpypi`, then
+   `pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ prefit`.
+3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow checks that the tag matches the
+   package version, builds, runs `twine check` and a wheel smoke test, then publishes to PyPI.

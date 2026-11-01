@@ -3,7 +3,7 @@
 A report never stores rows, so later steps that need data (`verify`, `holdout`)
 take the DataFrame again. The fingerprint proves it is the same frame: five
 SHA-256 digests (no data) are kept in the manifest, and any mismatch raises —
-metriclens never re-splits or silently continues on a different frame.
+prefit never re-splits or silently continues on a different frame.
 
     column_schema_digest   column names and their order
     dtype_digest           dtypes, in column order
@@ -58,10 +58,10 @@ def check(df: Any, expected: dict[str, Any], target: str, what: str,
     if not isinstance(df, pd.DataFrame):
         raise TypeError(f"{what} expects a pandas DataFrame, got {type(df).__name__}.")
     if not expected:
-        raise FingerprintMismatch(f"{what}: this report has no source fingerprint; re-run ml.analyze.")
+        raise FingerprintMismatch(f"{what}: this report has no source fingerprint; re-run pf.analyze.")
     if target not in df.columns:
         raise FingerprintMismatch(f"{what}: target column '{target}' is missing — this is not the DataFrame "
-                                  "passed to ml.analyze.")
+                                  "passed to pf.analyze.")
     got = fingerprint(df, target)
     bad = [k for k in DIGESTS if got[k] != expected[k]]
     if not bad and got["n_rows"] == expected["n_rows"]:
@@ -88,5 +88,5 @@ def check(df: Any, expected: dict[str, Any], target: str, what: str,
     elif "content_digest" in bad:
         reasons.append("cell values differ")
     raise FingerprintMismatch(
-        f"{what}: this is not the DataFrame passed to ml.analyze ({'; '.join(reasons)}). Nothing was re-split. "
-        "Pass the exact same frame, or re-run ml.analyze on the new data.")
+        f"{what}: this is not the DataFrame passed to pf.analyze ({'; '.join(reasons)}). Nothing was re-split. "
+        "Pass the exact same frame, or re-run pf.analyze on the new data.")

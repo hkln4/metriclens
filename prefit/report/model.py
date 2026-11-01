@@ -7,7 +7,7 @@ Traceability is structural:
 - a Decision names the findings/evidence it rests on, its class and its status,
 - only some (class, status) pairs are pipeline-eligible (see `Decision.eligible`).
 
-Every model here is deeply immutable (see `metriclens.frozen`). answer / verify /
+Every model here is deeply immutable (see `prefit.frozen`). answer / verify /
 interpret / register_external_holdout return a new Report with an incremented
 `details.manifest.revision` and a history entry; the old report is untouched.
 
@@ -248,7 +248,7 @@ class ContextState(Frozen):
 
 
 class Manifest(Frozen):
-    metriclens_version: str
+    prefit_version: str
     python: str
     packages: dict[str, str]
     seed: int
@@ -256,7 +256,7 @@ class Manifest(Frozen):
     profile_options: dict[str, Any]
     budget: dict[str, Any] | None = None
     benchmark: str | None = None
-    # digests of the DataFrame passed to analyze (no data): see metriclens.fingerprint
+    # digests of the DataFrame passed to analyze (no data): see prefit.fingerprint
     source_fingerprint: dict[str, Any] = Field(default_factory=dict)
     # metadata of an evaluation partition kept out of the analysis (no data)
     external_holdout: dict[str, Any] | None = None
@@ -414,7 +414,7 @@ class Report(Frozen):
     def __repr__(self) -> str:
         from ..render.common import headline, next_step
 
-        return f"<metriclens Report r{self.details.manifest.revision}: {headline(self)} Next: {next_step(self)}>"
+        return f"<prefit Report r{self.details.manifest.revision}: {headline(self)} Next: {next_step(self)}>"
 
     def _repr_html_(self) -> str:
         from ..render.html import summary_card

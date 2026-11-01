@@ -7,9 +7,12 @@ change the public API.
 ## 0.1.0 — 2026-11-01
 
 First release of the decision-driven design. Replaces the v0 `Roadmap` API.
+Developed as `metriclens`; published as **prefit** (`pip install prefit`,
+`import prefit as pf`) because the `metriclens` name is taken on PyPI by an
+unrelated project.
 
 ### Added
-- `ml.analyze()` returns a `Report`: Evidence → Finding → Decision chain with
+- `pf.analyze()` returns a `Report`: Evidence → Finding → Decision chain with
   decision classes (procedural / conditional / contextual / review) and statuses.
 - Input guard: misspelled targets and unknown keywords raise; holdout reserved
   before profiling (stratified, group-aware with `groups=`, time-ordered with
@@ -32,18 +35,18 @@ First release of the decision-driven design. Replaces the v0 `Roadmap` API.
 - Single-file HTML report with decision cards, linked evidence, rule versions
   and thresholds, experiments, decision-bound plotly figures with data tables,
   light/dark themes; text, markdown and JSON renders; reproducibility manifest.
-- `ml.review()`: reference-based hypothesis checks, baselines, residual /
+- `pf.review()`: reference-based hypothesis checks, baselines, residual /
   confusion / PR / segment analysis, list of never-verified assumptions;
   standalone or embedded HTML.
 - Optional LLM layer: allowlisted payload with `llm_payload()` preview, column
   aliasing, schema-constrained output, unknown-id claims dropped, suggestions
   never applied; Anthropic, Gemini and local OpenAI-compatible providers.
 - Versioned benchmark (`benchmarks/`), track record cited in reports.
-- CLI: `metriclens report data.csv --target y`.
+- CLI: `prefit report data.csv --target y`.
 - CI (ruff, mypy, pytest with coverage, HTML smoke test).
 
 ### Changed (pre-release API round)
-- Data partitions are explicit: `ml.split(df, target, test_size, strategy)` is the
+- Data partitions are explicit: `pf.split(df, target, test_size, strategy)` is the
   primary path; `analyze` defaults to `holdout=None` and only sets a holdout aside
   when asked (`holdout=0.2`). `report.split()` became `report.holdout(df)`, which
   re-derives that partition and never splits anew.
@@ -55,7 +58,7 @@ First release of the decision-driven design. Replaces the v0 `Roadmap` API.
   partition (metadata only, never profiled) and counts exact row overlap with
   the development data, reported as a review item without a leakage verdict.
 - Deep immutability: all report models are frozen, lists are tuples and dicts
-  read-only; every change is a new revision. `ml.load_report()` reloads JSON.
+  read-only; every change is a new revision. `pf.load_report()` reloads JSON.
 - API surface: reading / flow / automation on `Report`, internals under
   `report.details` (findings, evidence, profile, figures, manifest, context,
   limitations, rule_track_record, llm). Short reprs for all report objects,

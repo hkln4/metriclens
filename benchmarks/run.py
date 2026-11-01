@@ -4,7 +4,7 @@
     python benchmarks/run.py --verify     # + experiment outcomes on real datasets (slow)
 
 Writes benchmarks/results/<manifest>.json and .md, and refreshes
-metriclens/data/track_record.json, which reports cite as "rule detection pass
+prefit/data/track_record.json, which reports cite as "rule detection pass
 rate on benchmark <version>: k/n checks". Nothing is filtered: a failing case stays
 in the results and lowers the rule's track record.
 """
@@ -24,12 +24,12 @@ sys.path.insert(0, str(ROOT / "benchmarks"))
 
 from fixtures import CASES, MANIFEST_VERSION  # noqa: E402
 
-import metriclens as ml  # noqa: E402
+import prefit as pf  # noqa: E402
 
 
 def run_case(case) -> dict:
     df = case.make()
-    rep = ml.analyze(df, case.target, task=case.task, **case.kwargs)
+    rep = pf.analyze(df, case.target, task=case.task, **case.kwargs)
     by_rule: dict[str, set[str]] = {}
     for f in rep.details.findings:
         by_rule.setdefault(f.rule_id, set()).add(f.trigger.value)
@@ -55,7 +55,7 @@ def verify_real() -> list[dict]:
                        ("load_wine", "classification")):
         df = getattr(datasets, name)(as_frame=True).frame
         t0 = time.perf_counter()
-        rep = ml.analyze(df, "target", task=task, verify=True, budget=ml.Budget(max_experiments=6))
+        rep = pf.analyze(df, "target", task=task, verify=True, budget=pf.Budget(max_experiments=6))
         out.append({"dataset": f"sklearn:{name}", "seconds": round(time.perf_counter() - t0, 1),
                     "dev_metric": rep.metric_plan.dev_metric,
                     "decisions": {d.id: d.status.value for d in rep.decisions if d.cls.value == "conditional"},
@@ -77,9 +77,9 @@ def main() -> int:
             s["checks"] += 1
             s["passed"] += int(c["ok"])
     payload = {
-        "manifest_version": MANIFEST_VERSION, "metriclens_version": ml.__version__,
+        "manifest_version": MANIFEST_VERSION, "prefit_version": pf.__version__,
         "python": platform.python_version(),
-        "protocol": ("Each case runs ml.analyze with default options and seed 0. A check passes when the rule's "
+        "protocol": ("Each case runs pf.analyze with default options and seed 0. A check passes when the rule's "
                      "finding matches the expectation: fired / none / uncertain (near threshold)."),
         "cases": results, "rules": rules,
     }
@@ -93,9 +93,9 @@ def main() -> int:
         previous = json.loads(result_path.read_text())
         if "verification" in previous:
             payload["verification"] = previous["verification"]
-            payload["verification_from"] = previous.get("verification_from", previous.get("metriclens_version"))
+            payload["verification_from"] = previous.get("verification_from", previous.get("prefit_version"))
     result_path.write_text(json.dumps(payload, indent=2, default=str))
-    md = [f"# Benchmark {MANIFEST_VERSION} (metriclens {ml.__version__})", "", payload["protocol"], "",
+    md = [f"# Benchmark {MANIFEST_VERSION} (prefit {pf.__version__})", "", payload["protocol"], "",
           "Detection pass rate on known-hazard fixtures. This measures whether each rule fires (or stays silent) "
           "where the fixture says it should; it is not a claim about accuracy on real-world data.", "",
           "| rule | passed / checks |", "|---|---|"]
@@ -113,8 +113,8 @@ def main() -> int:
                    f"{e['outcome']}" for e in v["experiments"]] or ["- no conditional decisions fired"]
     (out_dir / f"{MANIFEST_VERSION}.md").write_text("\n".join(md) + "\n")
     tr = {"manifest_version": MANIFEST_VERSION, "rules": rules}
-    (ROOT / "metriclens" / "data").mkdir(exist_ok=True)
-    (ROOT / "metriclens" / "data" / "track_record.json").write_text(json.dumps(tr, indent=2))
+    (ROOT / "prefit" / "data").mkdir(exist_ok=True)
+    (ROOT / "prefit" / "data" / "track_record.json").write_text(json.dumps(tr, indent=2))
     n_ok = sum(r["ok"] for r in results)
     print(f"{n_ok}/{len(results)} cases passed")
     for r in results:

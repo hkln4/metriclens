@@ -8,7 +8,7 @@ import os
 from .provider import Provider
 
 _DEFAULT_MODEL = "gemini-2.5-flash"
-_INSTALL_HINT = "Gemini support requires the 'gemini' extra: pip install 'metriclens[gemini]'"
+_INSTALL_HINT = "Gemini support requires the 'gemini' extra: pip install 'prefit[gemini]'"
 
 
 class GeminiProvider(Provider):

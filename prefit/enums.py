@@ -71,7 +71,7 @@ class DecisionClass(str, Enum):
                   bounded experiment can support it.
     CONTEXTUAL  - cannot be decided from the data (cost of errors, what is
                   available at prediction time); needs the user's answer.
-    REVIEW      - a warning that needs human inspection; metriclens proposes no
+    REVIEW      - a warning that needs human inspection; prefit proposes no
                   automatic action.
     """
 

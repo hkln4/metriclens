@@ -1,0 +1,82 @@
+name: Release
+
+# Publishing uses PyPI Trusted Publishing (OIDC): no API token is stored anywhere.
+# - TestPyPI: run this workflow by hand (Actions -> Release -> Run workflow, target=testpypi)
+# - PyPI:     push a tag vX.Y.Z whose version matches pyproject.toml
+# One-time setup on (test.)pypi.org -> "Publishing" -> add a (pending) trusted publisher:
+#   owner hkln4, repository prefit, workflow release.yml, environment testpypi / pypi
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - name: Tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python - <<'PY'
+          import os, tomllib
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          assert version == tag, f"pyproject version {version} != tag {tag}"
+          PY
+      - name: Smoke-test the built wheel
+        run: |
+          python -m venv /tmp/smoke && /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/python -c "import prefit as pf, numpy as np, pandas as pd; df = pd.DataFrame({'a': np.arange(300.0), 'y': np.arange(300) % 2}); print(pf.__version__, len(pf.analyze(df, 'y').decisions))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/prefit
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/prefit
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

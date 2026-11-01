@@ -1,6 +1,6 @@
 # Architecture
 
-metriclens shortens the pre-training analysis of a tabular supervised-learning
+prefit shortens the pre-training analysis of a tabular supervised-learning
 project. It measures the data, derives classified decisions from the
 measurements, tests the decisions that can be tested, asks the user about the
 ones that cannot, and exports only what is safe, confirmed or verified.
@@ -8,7 +8,7 @@ ones that cannot, and exports only what is safe, confirmed or verified.
 ## Pipeline
 
 ```
-ml.split(df, ...) -> dev_df, test_df            (explicit; same splitter as holdout=)
+pf.split(df, ...) -> dev_df, test_df            (explicit; same splitter as holdout=)
 dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    │
    ▼  guard.py ─ validate inputs (misspelled target, single-class target, groups+time…);
@@ -36,7 +36,7 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    ├─ Report.export()                     export.py: model recipe + preprocessor + CV + scoring
    ├─ Report.interpret()  llm/: optional, schema-constrained interpretation
    ├─ Report.to_html()    render/: single-file report
-   └─ ml.review(...)      posttrain.py: assumptions vs. actual errors
+   └─ pf.review(...)      posttrain.py: assumptions vs. actual errors
 ```
 
 ## Contracts

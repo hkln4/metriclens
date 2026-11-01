@@ -1,7 +1,7 @@
 """Anthropic implementation of the Provider interface.
 
 `anthropic` is an optional dependency (the `[llm]` extra), imported lazily so
-`import metriclens` works with only the core dependencies installed.
+`import prefit` works with only the core dependencies installed.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import os
 from .provider import Provider
 
 _DEFAULT_MODEL = "claude-sonnet-5-5"
-_INSTALL_HINT = "Anthropic support requires the 'llm' extra: pip install 'metriclens[llm]'"
+_INSTALL_HINT = "Anthropic support requires the 'llm' extra: pip install 'prefit[llm]'"
 
 
 class AnthropicProvider(Provider):

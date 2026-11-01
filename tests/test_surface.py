@@ -6,12 +6,12 @@ import pandas as pd
 import pydantic
 import pytest
 
-import metriclens as ml
-from metriclens.profiling.stats import bootstrap_ci, skewness
+import prefit as pf
+from prefit.profiling.stats import bootstrap_ci, skewness
 
 
 def test_reports_are_deeply_immutable(imb_df):
-    rep = ml.analyze(imb_df, "y")
+    rep = pf.analyze(imb_df, "y")
     with pytest.raises(pydantic.ValidationError):
         rep.metric_plan = None
     with pytest.raises(pydantic.ValidationError):
@@ -26,15 +26,15 @@ def test_reports_are_deeply_immutable(imb_df):
 
 
 def test_every_change_is_a_revision(imb_df):
-    rep = ml.analyze(imb_df, "y")
+    rep = pf.analyze(imb_df, "y")
     r1 = rep.answer({"metric_priority": "symmetric"})
-    r2 = r1.verify(imb_df, budget=ml.Budget(max_experiments=0))
+    r2 = r1.verify(imb_df, budget=pf.Budget(max_experiments=0))
     assert [h["action"] for h in r2.details.manifest.history] == ["analyze", "answer", "verify"]
     assert (rep.details.manifest.revision, r1.details.manifest.revision, r2.details.manifest.revision) == (0, 1, 2)
 
 
 def test_reprs_are_short(imb_df):
-    rep = ml.analyze(imb_df, "y")
+    rep = pf.analyze(imb_df, "y")
     assert len(repr(rep)) < 500 and "Next:" in repr(rep)
     for obj in (rep.decisions[0], rep.details.findings[0], rep.questions[0], rep.metric_plan, rep.details):
         assert len(repr(obj)) < 300 and repr(obj).startswith("<")
@@ -42,7 +42,7 @@ def test_reprs_are_short(imb_df):
 
 
 def test_decisions_table(imb_df):
-    t = ml.analyze(imb_df, "y").decisions_table()
+    t = pf.analyze(imb_df, "y").decisions_table()
     assert isinstance(t, pd.DataFrame)
     assert list(t.columns) == ["stage", "status", "class", "decision", "why", "key evidence", "do", "experiment", "id"]
     row = t[t.id == "d.class_weight"].iloc[0]
@@ -50,7 +50,7 @@ def test_decisions_table(imb_df):
 
 
 def test_no_v0_aliases(imb_df):
-    rep = ml.analyze(imb_df, "y")
+    rep = pf.analyze(imb_df, "y")
     for name in ("recommended_metrics", "avoid", "validation_strategy", "preprocessing_notes", "split", "findings"):
         assert not hasattr(rep, name)
 
@@ -71,7 +71,7 @@ def test_infinite_values_are_a_finding_not_warnings():
     df.loc[:20, "a"] = np.inf
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        rep = ml.analyze(df, "y")
+        rep = pf.analyze(df, "y")
     f = rep.details.finding("f.infinite_values")
     assert "a" in f.columns
     assert rep.details.profile.columns["a"].stats["inf_count"] == 21
@@ -83,30 +83,30 @@ def test_infinite_values_are_a_finding_not_warnings():
 
 
 def test_scale_is_an_export_option_not_a_procedural_claim(reg_df):
-    rep = ml.analyze(reg_df, "y")
+    rep = pf.analyze(reg_df, "y")
     assert "scal" not in rep.decision("d.fit_in_fold").action.lower().replace("scaling is", "")
     assert "StandardScaler" in str(rep.export().preprocessor)
     assert "StandardScaler" not in str(rep.export(scale=False).preprocessor)
 
 
 def test_verification_uses_the_export_splitter(imb_df):
-    rep = ml.analyze(imb_df, "y", verify=True, budget=ml.Budget(max_experiments=1))
+    rep = pf.analyze(imb_df, "y", verify=True, budget=pf.Budget(max_experiments=1))
     assert "StratifiedKFold" in rep.decision("d.cv").step.params["name"]
     assert rep.baseline["cv"].startswith("RepeatedStratifiedKFold") and "export splitter" in rep.baseline["cv"]
     assert all(e.cv == rep.baseline["cv"] for e in rep.experiments)
 
 
 def test_skewed_title_separates_near_threshold():
-    from metriclens.rules.catalog import skewed_features  # noqa: F401
+    from prefit.rules.catalog import skewed_features  # noqa: F401
 
     rng = np.random.default_rng(0)
     df = pd.DataFrame({"a": rng.lognormal(sigma=1.2, size=3000), "b": rng.normal(size=3000),
                        "y": rng.normal(size=3000)})
-    title = ml.analyze(df, "y").decision("d.power_transform").title
+    title = pf.analyze(df, "y").decision("d.power_transform").title
     assert "skewed" in title and title.startswith("Power-transform 1 skewed")
 
 
 def test_association_is_named_2fold_cv(reg_df):
-    rep = ml.analyze(reg_df, "y")
+    rep = pf.analyze(reg_df, "y")
     assert "2-fold cross-validated" in rep.details.profile.relations.association_method
     assert "held-out score" not in rep.to_html()

@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-_MSG = ("metriclens report objects are immutable; use report.answer(), report.verify() or "
+_MSG = ("prefit report objects are immutable; use report.answer(), report.verify() or "
         "report.interpret() to derive a new revision")
 
 

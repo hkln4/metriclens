@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fixtures import CASES
 
-import metriclens as ml
+import prefit as pf
 
 GOLDEN = Path(__file__).parent / "golden"
 NAMES = ["imbalanced", "skewed_target", "leaky_categorical_classification", "datetime_column", "high_missing"]
@@ -29,7 +29,7 @@ def _snapshot(rep):
 @pytest.mark.parametrize("name", NAMES)
 def test_golden(name):
     case = next(c for c in CASES if c.name == name)
-    snap = _snapshot(ml.analyze(case.make(), case.target, task=case.task))
+    snap = _snapshot(pf.analyze(case.make(), case.target, task=case.task))
     path = GOLDEN / f"{name}.json"
     if os.environ.get("UPDATE_GOLDEN") or not path.exists():
         path.write_text(json.dumps(snap, indent=1) + "\n")
