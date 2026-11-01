@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-MANIFEST_VERSION = "2026.11-1"
+MANIFEST_VERSION = "2026.11-2"
 
 
 @dataclass

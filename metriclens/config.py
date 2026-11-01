@@ -19,6 +19,11 @@ class Budget(BaseModel):
     n_splits: int = Field(5, ge=2)
     n_repeats: int = Field(2, ge=1)
     alpha: float = Field(0.05, gt=0, lt=1, description="Family-wise error rate (Holm-corrected).")
+    min_relative_effect: float = Field(
+        0.01, ge=0, description="Smallest improvement that counts, as a fraction of |baseline score| "
+                                "(e.g. 0.01 = 1%). Smaller significant differences are reported as negligible.")
+    min_effect: float | None = Field(
+        None, ge=0, description="Absolute practical threshold in metric units; overrides min_relative_effect.")
 
 
 class ProfileOptions(BaseModel):

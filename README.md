@@ -7,8 +7,8 @@ it measures into a short list of *decisions* — how to split, which columns to
 question, what to preprocess, which metric to trust — and shows the evidence,
 threshold and uncertainty behind every one. Decisions that depend on your data
 and model are tested with small, bounded experiments instead of being assumed.
-At the end you get a scikit-learn pipeline that contains only steps that are
-safe, that you confirmed, or that an experiment supported.
+At the end you get a scikit-learn model recipe that contains only steps that
+are safe, that you confirmed, or that an experiment supported.
 
 It is not AutoML: it does not choose a model or tune hyperparameters, and it
 never applies an unconfirmed assumption silently.
@@ -38,9 +38,10 @@ report.to_html("report.html")       # single-file report, figures included
 report = report.answer({"metric_priority": "typical_error"})
 report = report.verify(df)          # bounded experiments, with your model
 
-built = report.export()             # Pipeline + CV splitter + scoring
+built = report.export()             # model recipe + CV splitter + scoring
+print(built.describe())             # what is in, what is out, and why
 dev, holdout = report.split(df)
-fitted = built.pipeline.fit(dev[built.feature_columns], dev["price"])
+fitted = built.model.fit(dev[built.feature_columns], dev["price"])
 review = ml.review(holdout["price"], fitted.predict(holdout[built.feature_columns]), report)
 report.to_html("report.html", review=review)
 ```
@@ -64,10 +65,10 @@ a **class**, which says how much the data alone can settle it:
 
 | class | meaning | enters the pipeline when |
 |---|---|---|
-| **procedural** | about *how to evaluate*; correct regardless of the data (fit preprocessing inside folds, stratify, keep the holdout untouched). Never changes the data's content. | always |
+| **procedural** | about *how to evaluate*; correct regardless of the data (fit preprocessing inside folds, stratify, keep the holdout untouched). The only column it removes are constant ones. | always |
 | **conditional** | may help or hurt depending on data and model (log target, power transform, target encoding, class weights, dropping mostly-missing columns) | an experiment with **your** estimator verifies it |
 | **contextual** | cannot be decided from data (metric = cost of errors, is a column known at prediction time, is it an identifier, does time order matter) | you answer the question |
-| **review** | needs a human look (duplicates, label conflicts, informative missingness, collinearity) | never; it is a to-do |
+| **review** | needs a human look (duplicates, label conflicts, informative missingness, collinearity, raw datetime/text columns v1 cannot encode) | never; it is a to-do |
 
 Some ground rules the catalog follows:
 
@@ -75,24 +76,47 @@ Some ground rules the catalog follows:
   a bootstrap or Wilson interval; when the interval straddles the threshold the
   finding is marked *near threshold* and its decision *uncertain*.
 - **Leakage is only ever a hint.** A feature that alone predicts the target on
-  held-out rows raises "leakage hint — manual review required" and a question
-  ("is this known at prediction time?"). Nothing is dropped until you answer.
+  held-out rows raises a "single-feature predictive leakage hint — manual review
+  required" and a question ("is this known at prediction time?"). Genuinely
+  strong features look the same, so nothing is dropped until you answer.
+- **Unsupported is not uninformative.** Raw datetimes, free text and string
+  identifiers are left out of the exported features because v1 has no encoder
+  for them — they are reported as a review item (engineer features from them),
+  never as "carries no signal".
 - **No group splitting without real groups.** ID-like columns and duplicates
   produce review items. `GroupKFold`-style splitters are used only when you pass
   `groups=`; `TimeSeriesSplit` and a time-ordered holdout only with `time_col=`.
+- **Split precedence is explicit.** `time_col` turns off class stratification
+  (the report says so); `groups` with classification uses
+  `StratifiedGroupKFold`, which balances classes only approximately; `groups`
+  and `time_col` together raise an error in v1 instead of silently dropping one.
 - **The holdout is reserved before anything is computed.** Profiling, rules and
-  experiments all run on the development rows.
+  experiments all run on the development rows, and the report opens with a
+  banner saying so.
 
 ## Experiments, and what they can claim
 
 `verify` tests each conditional decision once per model family as
-"current setup" vs. "current setup + this one change", on identical
-(repeated) folds. Differences are judged with the Nadeau–Bengio corrected
-paired t-test and Holm-corrected across the run. A `Budget` caps the number of
-experiments, wall-clock time and rows.
+"current setup" vs. "current setup + this one change", on identical folds. A
+`Budget` caps the number of experiments, wall-clock time and rows.
 
-- With `estimator=`, a significant improvement makes the decision **verified**
-  (and pipeline-eligible); a significant loss makes it **refuted**.
+The inference depends on the split protocol, and each experiment records which
+one was used:
+
+| protocol | when | test |
+|---|---|---|
+| `repeated_kfold` | default | corrected repeated k-fold t-test (Nadeau & Bengio 2003; Bouckaert & Frank 2004), Holm across the run |
+| `grouped_kfold` | `groups=` | same correction on a single grouped k-fold run (low power, said in the report) |
+| `time_series` | `time_col=` | none — expanding windows are not exchangeable; per-fold differences only, outcome left to you |
+
+An experiment counts as **improved** only with the right direction, a
+significant Holm-adjusted p-value, *and* a mean difference of at least the
+practical threshold (`Budget(min_relative_effect=0.01)` = 1% of the baseline
+score, or an absolute `min_effect`). Significant but smaller differences are
+**negligible**. Raw per-fold differences are in the report.
+
+- With `estimator=`, an improvement makes the decision **verified**
+  (and pipeline-eligible); a practical-size loss makes it **refuted**.
 - Without it, a linear and a tree proxy are used. Their results are a
   **sensitivity analysis** (`supported_by_proxy`), not a verdict on your model,
   and are excluded from the pipeline unless you pass
@@ -100,6 +124,19 @@ experiments, wall-clock time and rows.
   loses, the decision is marked model-family dependent.
 - All of it is **development evidence**. The generalization claim comes from
   the untouched holdout (or nested CV when the data is too small for one).
+
+## Export
+
+`report.export(estimator)` returns:
+
+- `model` — the full recipe for `fit` / `cross_validate`: `Pipeline(preprocess,
+  estimator)`, wrapped in a `TransformedTargetRegressor` when a target transform
+  was verified (`built.model_kind` says which). `None` without an estimator.
+- `preprocessor` — the feature preprocessing alone.
+- `cv`, `scoring`, `feature_columns`, `groups`, `sort_by`.
+- `included`, `excluded` (with status and reason), `needs_estimator` (eligible
+  estimator-level steps that could not be applied because no estimator was
+  given), `unsupported` (columns left out), `assumptions` still open.
 
 ## The report
 
@@ -114,7 +151,10 @@ offline use, `"none"` shows tables only.
 
 `report.to_text()`, `to_markdown()` and `to_json()` are also available; the JSON
 holds the full profile, evidence, decisions and manifest (versions, seed, rule
-versions, budget).
+versions, budget). `answer()`, `verify()` and `interpret()` never modify a
+report: each returns a new one whose `manifest.revision` is incremented and
+whose `manifest.history` records the step (answers given, estimator, budget,
+protocol, LLM provider).
 
 ## Optional LLM interpretation
 
@@ -133,6 +173,11 @@ decision ids are dropped and counted. With `share_column_names=False` columns
 are aliased and free-text messages are withheld; the report lists exactly what
 was sent. Without an LLM the report is complete.
 
+Provider status: the interpretation logic and the local OpenAI-compatible
+provider are tested (with a fake provider and a loopback server). The Anthropic
+and Gemini providers are thin wrappers that have **not** been exercised against
+the live APIs in this repository's tests.
+
 ## After training
 
 `ml.review(y_true, y_pred, report, y_score=..., segments=...)` checks the
@@ -149,11 +194,12 @@ that was never verified.
 injected hazard each, plus datasets bundled with scikit-learn) and checks that
 each rule fires, stays silent, or reports *near threshold* as expected. Results,
 including failures, are written to `benchmarks/results/<manifest>.json|md`;
-reports cite a rule's record as "correct on k/n fixture cases (manifest …)".
+reports cite a rule's "detection pass rate on benchmark <manifest>: k/n checks".
 `--verify` also records experiment outcomes on real datasets.
 
-Current manifest `2026.11-1`: 20/20 cases pass. These are detection checks on
-known hazards, not a claim about how often a decision improves a model.
+Current manifest `2026.11-2`: 20/20 cases pass. This is a detection pass rate on
+known-hazard fixtures — not a claim about real-world accuracy, nor about how
+often a decision improves a model.
 
 ## Case studies
 
@@ -174,6 +220,8 @@ known hazards, not a claim about how often a decision improves a model.
   entities is not detected.
 - Column kinds and the task are inferred heuristically; check the schema table.
 - Experiments test one change at a time; interactions are not measured.
+- `groups` and `time_col` cannot be combined in v1.
+- Raw datetime, free-text and string-identifier columns are not encoded.
 
 Design notes: [ARCHITECTURE.md](ARCHITECTURE.md) · changes: [CHANGELOG.md](CHANGELOG.md) ·
 contributing: [CONTRIBUTING.md](CONTRIBUTING.md)

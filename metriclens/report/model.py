@@ -129,13 +129,19 @@ class Experiment(BaseModel):
     baseline_scores: list[float]
     candidate_scores: list[float]
     mean_diff: float                 # candidate - baseline, in "higher is better" units
-    ci: tuple[float, float]
-    p_value: float
+    ci: tuple[float, float] | None = None
+    p_value: float | None = None     # None when the split protocol admits no valid test
     p_adjusted: float | None = None
-    outcome: str = ""                # improved / worse / no_difference
+    min_effect: float = 0.0          # practical threshold in metric units
+    folds_improved: int = 0
+    protocol: str = ""               # repeated_kfold / grouped_kfold / time_series
+    outcome: str = ""                # improved / worse / negligible / no_difference / not_tested
     seconds: float = 0.0
-    method: str = ("paired repeated k-fold; Nadeau-Bengio corrected t-test; "
-                   "Holm correction across all experiments in this run")
+    method: str = ""
+
+    @property
+    def fold_diffs(self) -> list[float]:
+        return [c - b for b, c in zip(self.baseline_scores, self.candidate_scores)]
 
 
 class FigureSpec(BaseModel):
@@ -197,6 +203,9 @@ class Manifest(BaseModel):
     profile_options: dict[str, Any]
     budget: dict[str, Any] | None = None
     benchmark: str | None = None
+    # every step that produced this report version: analyze, answer, verify, interpret
+    revision: int = 0
+    history: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Report(BaseModel):

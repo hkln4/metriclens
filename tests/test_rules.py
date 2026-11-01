@@ -56,7 +56,7 @@ def test_every_finding_and_decision_cites_existing_evidence(messy_df):
 
 def test_procedural_decisions_never_modify_data_content(messy_df):
     rep = ml.analyze(messy_df, "y")
-    allowed = {"d.cv", "d.holdout", "d.fit_in_fold", "d.drop_constant", "d.exclude_unsupported"}
+    allowed = {"d.cv", "d.holdout", "d.fit_in_fold", "d.drop_constant"}
     for d in rep.decisions:
         if d.cls is DecisionClass.PROCEDURAL:
             assert d.id in allowed, d.id
@@ -134,3 +134,34 @@ def test_deterministic(messy_df):
     a = ml.analyze(messy_df, "y").to_json()
     b = ml.analyze(messy_df, "y").to_json()
     assert a == b
+
+
+def test_datetime_and_text_are_review_items_not_dropped_as_uninformative(messy_df):
+    rep = ml.analyze(messy_df, "y")
+    d = rep.decision("d.unsupported_columns")
+    assert d.cls is DecisionClass.REVIEW and d.step is None
+    assert "not a judgement that these columns are uninformative" in d.rationale
+    ex = rep.export()
+    assert {"ts", "note"} <= {u["column"] for u in ex.unsupported}
+    assert "d.unsupported_columns" not in {x["id"] for x in ex.included}
+
+
+def test_groups_and_time_col_together_are_rejected(reg_df):
+    df = reg_df.assign(g=np.arange(len(reg_df)) // 5, t=pd.date_range("2020", periods=len(reg_df), freq="h"))
+    with pytest.raises(ValueError, match="not supported in v1"):
+        ml.analyze(df, "y", groups="g", time_col="t")
+
+
+def test_time_split_states_that_stratification_is_off(imb_df):
+    df = imb_df.assign(t=pd.date_range("2020", periods=len(imb_df), freq="h"))
+    rep = ml.analyze(df, "y", time_col="t")
+    assert "stratification is not applied" in rep.decision("d.cv").rationale
+
+
+def test_leakage_hint_is_named_single_feature():
+    from fixtures import leaky_numeric_regression
+
+    rep = ml.analyze(leaky_numeric_regression(), "y", task="regression")
+    f = rep.finding("f.leakage_hint.leak")
+    assert f.message.startswith("Single-feature predictive leakage hint")
+    assert "not proof of leakage" in f.message

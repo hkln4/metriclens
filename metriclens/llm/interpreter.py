@@ -149,6 +149,10 @@ def interpret_report(report: Any, llm: Any) -> Any:
             continue
         q.suggestion, q.suggestion_reason = s.option, s.reason
     model = getattr(provider, "model", None) or cfg.model or "?"
+    from ..api import _next_revision
+
+    new.manifest = _next_revision(new.manifest, "interpret", provider=type(provider).__name__, model=str(model),
+                                  column_names_sent=cfg.share_column_names, dropped_claims=dropped)
     new.llm = LLMInterpretation(
         provider=type(provider).__name__, model=str(model), summary=out.summary, priorities=claims,
         questions_for_user=out.questions_for_user, semantic_flags=flags, dropped_claims=dropped,

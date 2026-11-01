@@ -5,8 +5,13 @@ Design constraints (so this never becomes AutoML):
   "base setup" vs "base setup + this one change", on identical folds;
 - the base setup is the procedural + user-confirmed decisions only;
 - a hard budget caps experiment count, wall-clock time and rows;
-- differences are judged with a paired, Nadeau-Bengio corrected t-test, and
-  Holm-corrected across every experiment in the run;
+- the significance test depends on the split protocol: repeated (or grouped)
+  k-fold uses the corrected resampled t-test (Nadeau & Bengio 2003; Bouckaert
+  & Frank 2004), Holm-corrected across the run; time-ordered folds are not
+  exchangeable, so no p-value is computed there;
+- "improved" needs direction, significance AND a practical effect threshold
+  (Budget.min_effect / min_relative_effect); smaller significant differences
+  are "negligible";
 - the user's estimator, when given, is the only thing that can VERIFY a
   decision; proxy models produce a sensitivity analysis (SUPPORTED_BY_PROXY).
 All of it is development evidence on the dev rows — never the holdout.
@@ -48,6 +53,25 @@ def _splits(report: Any, X: pd.DataFrame, y: pd.Series, groups: Any, budget: Bud
     return list(cv.split(X, y))
 
 
+def _protocol(report: Any, groups: Any, budget: Budget, n_folds: int) -> tuple[str, str, int, int]:
+    """Name the split protocol and the inference that is valid for it."""
+    if report.context.time_col:
+        return ("time_series",
+                f"{n_folds} expanding-window time-series folds. Training sets overlap and grow and folds are not "
+                "exchangeable, so no significance test is valid here; the outcome is left to you from the per-fold "
+                "differences.", n_folds, 1)
+    if groups is not None:
+        return ("grouped_kfold",
+                f"one run of {n_folds}-fold grouped CV on identical folds (groups cannot be re-shuffled without "
+                "changing the split); corrected resampled t-test (Nadeau & Bengio 2003), df = k-1, low power with "
+                "few folds; Holm across this run.", n_folds, 1)
+    k = n_folds // budget.n_repeats
+    return ("repeated_kfold",
+            f"{budget.n_repeats}x{k}-fold CV on identical folds; corrected repeated k-fold t-test (Nadeau & Bengio "
+            "2003; Bouckaert & Frank 2004): variance x (1/n + n_test/n_train), df = n-1 over all n folds; Holm "
+            "across this run.", k, budget.n_repeats)
+
+
 def corrected_ttest(base: np.ndarray, cand: np.ndarray, test_train_ratio: float) -> tuple[float, tuple[float, float], float]:
     """Nadeau & Bengio (2003) corrected resampled t-test on paired fold scores.
     Returns (mean_diff, 95% CI, two-sided p)."""
@@ -64,6 +88,19 @@ def corrected_ttest(base: np.ndarray, cand: np.ndarray, test_train_ratio: float)
     p = float(2 * stats.t.sf(abs(t), k - 1))
     half = float(stats.t.ppf(0.975, k - 1) * se)
     return mean, (mean - half, mean + half), p
+
+
+def classify_outcome(mean_diff: float, p_adjusted: float | None, min_effect: float, alpha: float) -> str:
+    """Direction + significance + practical size. Without a valid test: not_tested."""
+    if p_adjusted is None:
+        return "not_tested"
+    if p_adjusted >= alpha:
+        return "no_difference"
+    if mean_diff > 0 and mean_diff >= min_effect:
+        return "improved"
+    if mean_diff < 0 and -mean_diff >= min_effect:
+        return "worse"
+    return "negligible"
 
 
 def holm(pvals: list[float]) -> list[float]:
@@ -114,6 +151,7 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
         scorer = get_scorer(scorer)
     splits = _splits(report, X, y, g, budget, seed)
     ratio = float(np.mean([len(te) / len(tr) for tr, te in splits]))
+    protocol, method, n_splits, n_repeats = _protocol(report, g, budget, len(splits))
 
     base_steps = [d.step for d in report.decisions
                   if d.step and d.step.kind != "cv" and d.cls is not DecisionClass.CONDITIONAL and d.eligible()]
@@ -156,24 +194,41 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
             except Exception as exc:
                 notes[d.id] = f"error: {exc}"
                 continue
-            mean, ci, pval = corrected_ttest(base_scores[fam], cand, ratio)
             runs += 1
+            base = base_scores[fam]
+            min_eff = (budget.min_effect if budget.min_effect is not None
+                       else budget.min_relative_effect * abs(float(base.mean())))
+            diffs = cand - base
+            if protocol == "time_series":
+                mean, ci, pval = float(diffs.mean()), None, None
+            else:
+                mean, ci_t, pval = corrected_ttest(base, cand, ratio)
+                ci = ci_t
             experiments.append(Experiment(
                 id=f"exp.{d.id[2:]}.{fam}", decision_id=d.id, family=fam, estimator=type(est).__name__,
-                metric=plan.dev_metric, n_rows=int(len(df)), n_splits=budget.n_splits,
-                n_repeats=1 if (g is not None or report.context.time_col) else budget.n_repeats,
-                baseline_scores=[float(x) for x in base_scores[fam]], candidate_scores=[float(x) for x in cand],
-                mean_diff=mean, ci=ci, p_value=pval, seconds=round(time.perf_counter() - ts, 2)))
-    if experiments:
-        for e, a in zip(experiments, holm([e.p_value for e in experiments])):
-            e.p_adjusted = a
-            e.outcome = ("improved" if e.mean_diff > 0 else "worse") if a < budget.alpha else "no_difference"
+                metric=plan.dev_metric, n_rows=int(len(df)), n_splits=n_splits, n_repeats=n_repeats,
+                baseline_scores=[float(x) for x in base], candidate_scores=[float(x) for x in cand],
+                mean_diff=mean, ci=ci, p_value=pval, min_effect=float(min_eff),
+                folds_improved=int((diffs > 0).sum()), protocol=protocol, method=method,
+                seconds=round(time.perf_counter() - ts, 2)))
+    tested = [e for e in experiments if e.p_value is not None]
+    adjusted = holm([float(e.p_value) for e in tested if e.p_value is not None]) if tested else []
+    for e, a in zip(tested, adjusted):
+        e.p_adjusted = a
+    for e in experiments:
+        e.outcome = classify_outcome(e.mean_diff, e.p_adjusted, e.min_effect, budget.alpha)
     baseline["seconds"] = round(time.perf_counter() - t0, 2)
     return experiments, baseline, notes
 
 
 def status_from_experiments(d: Decision, exps: list[Experiment], user: bool) -> tuple[DecisionStatus, str]:
     outcomes = {e.family: e.outcome for e in exps}
+    if "not_tested" in outcomes.values():
+        return (DecisionStatus.INCONCLUSIVE,
+                "Time-ordered folds admit no significance test; judge from the per-fold differences.")
+    if "negligible" in outcomes.values() and "improved" not in outcomes.values() and "worse" not in outcomes.values():
+        return (DecisionStatus.INCONCLUSIVE,
+                "The difference is statistically detectable but below the practical threshold (Budget.min_effect).")
     if user:
         o = outcomes.get("user", "")
         return ({"improved": DecisionStatus.VERIFIED, "worse": DecisionStatus.REFUTED}

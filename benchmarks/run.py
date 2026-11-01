@@ -4,8 +4,8 @@
     python benchmarks/run.py --verify     # + experiment outcomes on real datasets (slow)
 
 Writes benchmarks/results/<manifest>.json and .md, and refreshes
-metriclens/data/track_record.json, which reports cite as "correct on k/n
-fixture cases (manifest <version>)". Nothing is filtered: a failing case stays
+metriclens/data/track_record.json, which reports cite as "rule detection pass
+rate on benchmark <version>: k/n checks". Nothing is filtered: a failing case stays
 in the results and lowers the rule's track record.
 """
 
@@ -73,9 +73,9 @@ def main() -> int:
     rules: dict[str, dict[str, int]] = {}
     for r in results:
         for c in r["checks"]:
-            s = rules.setdefault(c["rule"], {"cases": 0, "correct": 0})
-            s["cases"] += 1
-            s["correct"] += int(c["ok"])
+            s = rules.setdefault(c["rule"], {"checks": 0, "passed": 0})
+            s["checks"] += 1
+            s["passed"] += int(c["ok"])
     payload = {
         "manifest_version": MANIFEST_VERSION, "metriclens_version": ml.__version__,
         "python": platform.python_version(),
@@ -89,8 +89,10 @@ def main() -> int:
     out_dir.mkdir(exist_ok=True)
     (out_dir / f"{MANIFEST_VERSION}.json").write_text(json.dumps(payload, indent=2, default=str))
     md = [f"# Benchmark {MANIFEST_VERSION} (metriclens {ml.__version__})", "", payload["protocol"], "",
-          "| rule | correct / cases |", "|---|---|"]
-    md += [f"| `{k}` | {v['correct']}/{v['cases']} |" for k, v in sorted(rules.items())]
+          "Detection pass rate on known-hazard fixtures. This measures whether each rule fires (or stays silent) "
+          "where the fixture says it should; it is not a claim about accuracy on real-world data.", "",
+          "| rule | passed / checks |", "|---|---|"]
+    md += [f"| `{k}` | {v['passed']}/{v['checks']} |" for k, v in sorted(rules.items())]
     md += ["", "| case | source | rows | ok | failed checks |", "|---|---|---|---|---|"]
     for r in results:
         failed = "; ".join(f"{c['rule']}: expected {c['expect']}, got {','.join(c['got'])}"

@@ -36,7 +36,7 @@ def main() -> None:
     print(built.describe())
 
     dev, holdout = report.split(df)
-    fitted = built.pipeline.fit(dev[built.feature_columns], dev["MedHouseVal"])
+    fitted = built.model.fit(dev[built.feature_columns], dev["MedHouseVal"])
     pred = fitted.predict(holdout[built.feature_columns])
     rev = ml.review(holdout["MedHouseVal"], pred, report, segments=holdout["HouseAge"].gt(30).map(
         {True: "older than 30y", False: "30y or newer"}).rename("house_age"))

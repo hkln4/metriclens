@@ -50,6 +50,11 @@ def validate_inputs(
         if parsed.notna().mean() < 0.95:
             raise ValueError(f"`time_col` '{time_col}' could not be parsed as datetimes for >5% of rows.")
 
+    if groups is not None and time_col is not None:
+        raise ValueError(
+            "groups= and time_col= together are not supported in v1: no splitter can keep groups whole and respect "
+            "time order at once without assumptions about your data. Pass one of them (time_col if predictions run "
+            "forward in time), or build a custom splitter and evaluate with it yourself.")
     if groups is None:
         return None
     if isinstance(groups, str):
@@ -132,7 +137,7 @@ def reserve_holdout(
             chosen.append(g)
             total += int(sizes[g])
         hold = np.flatnonzero(groups.isin(chosen).to_numpy())
-        method = f"{len(chosen)} whole groups (~{fraction:.0%} of rows)"
+        method = f"{len(chosen)} whole groups (~{fraction:.0%} of rows; not stratified by class)"
     elif task is Task.CLASSIFICATION:
         y = df[target].to_numpy()
         hold_parts = []

@@ -42,6 +42,27 @@ First release of the decision-driven design. Replaces the v0 `Roadmap` API.
 - CLI: `metriclens report data.csv --target y`.
 - CI (ruff, mypy, pytest with coverage, HTML smoke test).
 
+### Changed (pre-release review)
+- Raw datetime / text / string-id columns are a review item ("unsupported in
+  v1, may carry signal"), no longer a procedural drop.
+- `groups=` together with `time_col=` raises instead of silently ignoring
+  `groups`; the time split states that class stratification is off; grouped
+  classification notes that class balance is approximate.
+- Verification: the test now follows the split protocol (corrected repeated
+  k-fold t-test; single-run grouped k-fold; no p-value for time-series folds),
+  and "improved" requires a practical effect threshold
+  (`Budget.min_relative_effect` / `min_effect`). Per-fold differences and the
+  protocol are shown in the report.
+- `export()` returns `model` (full estimator recipe, possibly a
+  `TransformedTargetRegressor`) and `preprocessor` instead of `pipeline`;
+  estimator-level steps without an estimator go to `needs_estimator`, and an
+  estimator without `class_weight` moves that step to `excluded` — nothing
+  listed as included is dropped.
+- Reports record `manifest.revision` and `manifest.history` for every
+  analyze / answer / verify / interpret step.
+- Wording: "single-feature predictive leakage hint"; benchmark records are a
+  "rule detection pass rate"; the HTML report opens with a data-partition note.
+
 ### Changed
 - `GroupKFold` is no longer suggested from duplicates or id-like columns.
 - Integer targets with more than 10 distinct values are inferred as regression.

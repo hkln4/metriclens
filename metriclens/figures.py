@@ -256,27 +256,41 @@ def _link(figs: list[FigureSpec], evidence: dict[str, Evidence], decisions: list
 
 
 def experiment_figure(decision: Decision, experiments: list[Any]) -> FigureSpec:
-    """Per-fold paired differences for one decision, one row per model family."""
+    """Per-fold paired differences for one decision, one row per model family,
+    with the practical-effect band shaded."""
     traces, rows = [], []
     for i, e in enumerate(experiments):
-        diffs = [c - b for b, c in zip(e.baseline_scores, e.candidate_scores)]
-        traces.append({"type": "scatter", "mode": "markers", "x": diffs, "y": [e.family] * len(diffs),
+        diffs = e.fold_diffs
+        traces.append({"type": "scatter", "mode": "markers", "x": [r(x) for x in diffs], "y": [e.family] * len(diffs),
                        "marker": {"color": f"var:series-{i + 1}", "size": 9,
                                   "line": {"color": "var:surface", "width": 2}},
                        "name": e.family, "hovertemplate": e.family + " fold diff: %{x:.4g}<extra></extra>"})
-        traces.append({"type": "scatter", "mode": "markers", "x": [e.mean_diff], "y": [e.family],
-                       "error_x": {"type": "data", "symmetric": False, "array": [e.ci[1] - e.mean_diff],
-                                   "arrayminus": [e.mean_diff - e.ci[0]], "color": "var:text-primary",
-                                   "thickness": 2},
-                       "marker": {"color": "var:text-primary", "size": 12, "symbol": "diamond"},
-                       "name": f"{e.family} mean", "hovertemplate": "mean diff %{x:.4g}<extra></extra>"})
-        rows.append([e.family, e.metric, r(e.mean_diff), f"[{r(e.ci[0])}, {r(e.ci[1])}]", r(e.p_adjusted), e.outcome])
+        mean_tr: dict[str, Any] = {
+            "type": "scatter", "mode": "markers", "x": [r(e.mean_diff)], "y": [e.family],
+            "marker": {"color": "var:text-primary", "size": 12, "symbol": "diamond"},
+            "name": f"{e.family} mean", "hovertemplate": "mean diff %{x:.4g}<extra></extra>"}
+        if e.ci is not None:
+            mean_tr["error_x"] = {"type": "data", "symmetric": False, "array": [r(e.ci[1] - e.mean_diff)],
+                                  "arrayminus": [r(e.mean_diff - e.ci[0])], "color": "var:text-primary",
+                                  "thickness": 2}
+        traces.append(mean_tr)
+        ci = f"[{r(e.ci[0])}, {r(e.ci[1])}]" if e.ci is not None else "—"
+        rows.append([e.family, e.metric, r(e.mean_diff), ci, r(e.p_adjusted), r(e.min_effect),
+                     f"{e.folds_improved}/{len(diffs)}", ", ".join(f"{x:+.4g}" for x in diffs), e.outcome])
     lay = _layout("candidate - current (higher = the change helps)", "",
                   height=max(180, 70 * len(experiments) + 90), margin={"l": 110, "r": 16, "t": 16, "b": 48})
+    me = max((e.min_effect for e in experiments), default=0.0)
     lay["shapes"] = [_threshold_line(0.0)]
+    if me > 0:
+        lay["shapes"].insert(0, {"type": "rect", "x0": -me, "x1": me, "y0": 0, "y1": 1, "yref": "paper",
+                                 "fillcolor": "var:series-1-soft", "opacity": 0.5, "line": {"width": 0},
+                                 "layer": "below"})
     return FigureSpec(
         id=f"fig.exp.{decision.id[2:]}", title=f"Experiment · {decision.title}", priority=25,
-        what="Per-fold score difference (dots) and mean with corrected 95% interval (diamond). Dashed line: no change.",
-        why="Shows whether the conditional decision helps beyond fold-to-fold noise, per model family.",
+        what="Per-fold score difference (dots), mean with its corrected 95% interval (diamond), and the "
+             "practical-effect band (shaded): differences inside it count as negligible. Dashed line: no change.",
+        why="Shows whether the conditional decision helps beyond fold-to-fold noise and beyond the practical "
+            "threshold, per model family.",
         decision_ids=[decision.id], plot={"data": traces, "layout": lay},
-        table={"columns": ["family", "metric", "mean diff", "95% CI", "p (Holm)", "outcome"], "rows": rows})
+        table={"columns": ["family", "metric", "mean diff", "95% CI", "p (Holm)", "practical threshold",
+                           "folds improved", "per-fold differences", "outcome"], "rows": rows})

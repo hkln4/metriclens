@@ -44,9 +44,22 @@ def _to_str(X: Any) -> np.ndarray:
     return df.astype(object).where(df.notna(), "__missing__").astype(str).to_numpy(dtype=object)
 
 
+ESTIMATOR_STEPS = {"log_target", "class_weight"}
+
+
 @dataclass
 class ExportResult:
-    pipeline: Any
+    """What `Report.export()` builds.
+
+    model         the full estimator recipe, ready for fit / cross_validate: a
+                  Pipeline(preprocess, estimator), wrapped in a
+                  TransformedTargetRegressor when a target transform is included.
+                  None when no estimator was given.
+    preprocessor  the feature preprocessing alone (a Pipeline), always present.
+    """
+
+    model: Any
+    preprocessor: Any
     cv: Any
     scoring: dict[str, Any]
     feature_columns: list[str]
@@ -54,19 +67,37 @@ class ExportResult:
     sort_by: str | None
     included: list[dict[str, str]] = field(default_factory=list)
     excluded: list[dict[str, str]] = field(default_factory=list)
+    needs_estimator: list[dict[str, str]] = field(default_factory=list)
+    unsupported: list[dict[str, str]] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
 
+    @property
+    def model_kind(self) -> str:
+        if self.model is None:
+            return "none (pass estimator= to get a model recipe)"
+        name = type(self.model).__name__
+        if name == "TransformedTargetRegressor":
+            return "TransformedTargetRegressor(Pipeline(preprocess, estimator))"
+        return "Pipeline(preprocess, estimator)"
+
     def describe(self) -> str:
-        lines = ["EXPORTED PIPELINE", f"features: {len(self.feature_columns)} columns",
-                 f"cv: {self.cv!r}", f"scoring: {list(self.scoring)}"]
+        lines = ["EXPORTED MODEL RECIPE", f"model: {self.model_kind}",
+                 f"features: {len(self.feature_columns)} columns", f"cv: {self.cv!r}",
+                 f"scoring: {list(self.scoring)}"]
         if self.groups:
             lines.append(f"groups: pass groups=df['{self.groups}'] to cross_validate")
         if self.sort_by:
             lines.append(f"sort rows by '{self.sort_by}' before splitting (TimeSeriesSplit)")
         lines.append("included:")
         lines += [f"  + {d['id']}: {d['title']}" for d in self.included] or ["  (none)"]
+        if self.needs_estimator:
+            lines.append("eligible but not applied (estimator-level; pass estimator=):")
+            lines += [f"  ~ {d['id']}: {d['title']}" for d in self.needs_estimator]
         lines.append("not included:")
         lines += [f"  - {d['id']} [{d['status']}]: {d['reason']}" for d in self.excluded] or ["  (none)"]
+        if self.unsupported:
+            lines.append("columns left out (not supported raw in v1; may carry signal):")
+            lines += [f"  · {d['column']} ({d['kind']})" for d in self.unsupported]
         if self.assumptions:
             lines.append("assumptions still open:")
             lines += [f"  ? {a}" for a in self.assumptions]
@@ -237,7 +268,7 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
     from sklearn.pipeline import Pipeline
 
     p = report.profile
-    included, excluded, steps = [], [], []
+    included, excluded, needs_est, steps = [], [], [], []
     cv_step = None
     for d in report.decisions:
         if d.step is None:
@@ -245,27 +276,32 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
         if d.step.kind == "cv":
             cv_step = d.step
             continue
-        if d.eligible(include_proxy_supported):
-            steps.append(d.step)
-            included.append({"id": d.id, "title": d.title})
-        else:
+        if not d.eligible(include_proxy_supported):
             excluded.append({"id": d.id, "title": d.title, "status": d.status.value,
                              "reason": _EXCLUDED_REASON.get(d.status.value, d.status.value)})
-    if estimator is not None and any(s.kind == "class_weight" for s in steps):
-        if "class_weight" not in estimator.get_params():
-            steps = [s for s in steps if s.kind != "class_weight"]
-    if estimator is not None:
-        pipeline = build_model(p, steps, estimator)
-    else:
-        pipeline, _ = build_preprocessor(p, steps)
-        pipeline = Pipeline([("preprocess", pipeline)])
-    _, cols = build_preprocessor(p, steps)
+        elif d.step.kind in ESTIMATOR_STEPS and estimator is None:
+            needs_est.append({"id": d.id, "title": d.title})
+        elif d.step.kind == "class_weight" and "class_weight" not in estimator.get_params():
+            excluded.append({"id": d.id, "title": d.title, "status": "not_applicable",
+                             "reason": f"{type(estimator).__name__} has no class_weight parameter"})
+        else:
+            steps.append(d.step)
+            included.append({"id": d.id, "title": d.title})
+
+    pre, cols = build_preprocessor(p, steps)
+    preprocessor = Pipeline([("preprocess", pre)])
+    model = build_model(p, steps, estimator) if estimator is not None else None
 
     plan = report.metric_plan
     pos = positive_label(p, plan.positive_label)
     names = list(dict.fromkeys(plan.primary + plan.report_alongside + ([plan.dev_metric] if plan.dev_metric else [])))
     scoring = {n: build_scorer(n, p, pos) for n in names}
 
+    from .enums import ColumnKind
+
+    unsupported = [{"column": c, "kind": cp.kind.value} for c, cp in p.columns.items()
+                   if cp.kind in (ColumnKind.DATETIME, ColumnKind.TEXT)
+                   or (cp.kind is ColumnKind.ID_LIKE and not cp.dtype.startswith(("int", "uint", "Int", "UInt")))]
     assumptions = []
     if p.task_inferred and report.context.answers.get("q.task") is None:
         assumptions.append(f"task inferred as {p.task.value} (unconfirmed)")
@@ -277,6 +313,7 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
         if d.cls is DecisionClass.REVIEW:
             assumptions.append(f"review item open: {d.title}")
     return ExportResult(
-        pipeline=pipeline, cv=build_cv(cv_step), scoring=scoring, feature_columns=cols,
+        model=model, preprocessor=preprocessor, cv=build_cv(cv_step), scoring=scoring, feature_columns=cols,
         groups=report.context.groups if report.context.groups not in (None, "<array>") else None,
-        sort_by=report.context.time_col, included=included, excluded=excluded, assumptions=assumptions)
+        sort_by=report.context.time_col, included=included, excluded=excluded, needs_estimator=needs_est,
+        unsupported=unsupported, assumptions=assumptions)

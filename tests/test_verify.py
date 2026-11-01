@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.neighbors import KNeighborsClassifier
@@ -69,3 +70,42 @@ def test_metric_change_flags_stale_experiments(imb_df):
 def test_verify_never_touches_holdout(reg_df):
     rep = ml.analyze(reg_df, "y", verify=True, budget=ml.Budget(max_experiments=0))
     assert rep.baseline["n_rows"] == rep.profile.dataset.n_rows
+
+
+def test_outcome_needs_direction_significance_and_practical_size():
+    from metriclens.verify import classify_outcome
+
+    assert classify_outcome(0.05, 0.001, 0.01, 0.05) == "improved"
+    assert classify_outcome(0.005, 0.001, 0.01, 0.05) == "negligible"     # significant but tiny
+    assert classify_outcome(-0.05, 0.001, 0.01, 0.05) == "worse"
+    assert classify_outcome(0.05, 0.2, 0.01, 0.05) == "no_difference"
+    assert classify_outcome(0.05, None, 0.01, 0.05) == "not_tested"
+
+
+def test_large_practical_threshold_blocks_verification():
+    df = _skewed_reg()
+    rep = ml.analyze(df, "y", task="regression", estimator=Ridge(), verify=True,
+                     budget=ml.Budget(max_experiments=2, n_repeats=1, min_effect=1e6))
+    e = next(e for e in rep.experiments if e.decision_id == "d.log_target")
+    assert e.min_effect == 1e6 and e.outcome in {"negligible", "no_difference"}
+    assert rep.decision("d.log_target").status is not DecisionStatus.VERIFIED
+
+
+def test_time_series_protocol_has_no_p_value(reg_df):
+    df = reg_df.assign(t=pd.date_range("2020", periods=len(reg_df), freq="h"))
+    df["y"] = np.exp(df.f1 * 0.8)
+    rep = ml.analyze(df, "y", task="regression", time_col="t", estimator=Ridge(), verify=True,
+                     budget=ml.Budget(max_experiments=2))
+    assert rep.experiments
+    for e in rep.experiments:
+        assert e.protocol == "time_series" and e.p_value is None and e.outcome == "not_tested"
+        assert "no significance test" in e.method
+    d = rep.decision(rep.experiments[0].decision_id)
+    assert d.status is DecisionStatus.INCONCLUSIVE and "per-fold" in d.note
+
+
+def test_repeated_kfold_protocol_is_named():
+    rep = ml.analyze(_skewed_reg(), "y", task="regression", estimator=Ridge(), verify=True,
+                     budget=ml.Budget(max_experiments=1, n_repeats=2))
+    e = rep.experiments[0]
+    assert e.protocol == "repeated_kfold" and "Bouckaert" in e.method and len(e.fold_diffs) == 10

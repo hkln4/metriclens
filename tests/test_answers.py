@@ -47,3 +47,15 @@ def test_answers_do_not_mutate_original(messy_df):
     rep = ml.analyze(messy_df, "y")
     rep.answer({"metric_priority": "symmetric"})
     assert rep.decision("d.metric").status is DecisionStatus.AWAITING_USER
+
+
+def test_revisions_are_recorded_and_old_reports_unchanged(imb_df):
+    rep = ml.analyze(imb_df, "y")
+    assert rep.manifest.revision == 0 and rep.manifest.history[0]["action"] == "analyze"
+    rep2 = rep.answer({"metric_priority": "symmetric"})
+    assert rep2.manifest.revision == 1
+    assert rep2.manifest.history[-1] == {"revision": 1, "action": "answer",
+                                         "answers": {"q.metric_priority": "symmetric"}}
+    assert rep.manifest.revision == 0 and len(rep.manifest.history) == 1
+    rep3 = rep2.verify(imb_df, budget=ml.Budget(max_experiments=0))
+    assert [h["action"] for h in rep3.manifest.history] == ["analyze", "answer", "verify"]

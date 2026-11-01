@@ -24,6 +24,7 @@ from .common import (
     fmt,
     fmt_ci,
     headline,
+    partition_note,
     priorities,
     status_word,
     summary_counts,
@@ -108,6 +109,8 @@ code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85re
 pre{background:var(--surface-2);padding:10px;border-radius:8px;overflow-x:auto}
 .llm{border:1px dashed var(--border);border-radius:12px;padding:14px 16px}
 .noplot .plot{display:none}
+.partition{border:1px solid var(--border);border-left:4px solid var(--series-1);border-radius:8px;
+background:var(--surface-2);padding:10px 12px;margin:12px 0;font-size:.92rem}
 """
 
 JS = r"""
@@ -208,19 +211,21 @@ def _decision_card(r: Any, d: Any) -> str:
         ver = r.manifest.rule_versions.get(d.rule_id, "?")
         thr = "; ".join(f"{k} = {fmt(v)}" for k, v in (findings[0].thresholds if findings else {}).items())
         tr = r.rule_track_record.get(d.rule_id)
-        trs = (f" · benchmark: correct on {tr['correct']}/{tr['cases']} fixture cases "
-               f"(manifest {esc(r.manifest.benchmark or '?')})" if tr else "")
+        trs = (f" · rule detection pass rate on benchmark {esc(r.manifest.benchmark or '?')}: "
+               f"{tr['passed']}/{tr['checks']} checks (known-hazard fixtures; not a real-world accuracy claim)"
+               if tr else "")
         rule_html = (f'<dt>Rule</dt><dd><code>{esc(d.rule_id)}</code> v{esc(ver)}'
                      + (f" · thresholds: {esc(thr)}" if thr else "") + f"{trs}</dd>")
     exp_html = ""
     exps = [e for e in r.experiments if e.decision_id == d.id]
     if exps:
-        erows = [[e.family, e.estimator, label(e.metric), fmt(e.mean_diff), fmt_ci(e.ci), fmt(e.p_adjusted), e.outcome]
-                 for e in exps]
+        erows = [[e.family, e.estimator, label(e.metric), fmt(e.mean_diff), fmt_ci(e.ci), fmt(e.p_adjusted),
+                  fmt(e.min_effect), f"{e.folds_improved}/{len(e.fold_diffs)}", e.outcome] for e in exps]
         exp_html = ("<dt>Experiment</dt><dd>" + table(["family", "estimator", "metric", "mean diff", "95% CI",
-                                                       "p (Holm)", "outcome"], erows)
-                    + f'<span class="links">development evidence · paired CV, corrected t-test · '
-                    f'{_link("fig.exp." + d.id[2:], "figure")}</span></dd>')
+                                                       "p (Holm)", "practical threshold", "folds improved",
+                                                       "outcome"], erows)
+                    + f'<span class="links">development evidence on dev rows · {esc(exps[0].method)} · '
+                    f'per-fold differences: {_link("fig.exp." + d.id[2:], "figure and table")}</span></dd>')
     q_html = ""
     if d.question_id:
         q = next((q for q in r.questions if q.id == d.question_id), None)
@@ -279,7 +284,8 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
 
     out = [f'<header><h1>metriclens report · {esc(r.target)}</h1>'
            f'<p class="sub">{esc(headline(r))}</p><div class="chips">'
-           + "".join(f'<span class="chip">{esc(x)}</span>' for x in chips) + "</div></header>"]
+           + "".join(f'<span class="chip">{esc(x)}</span>' for x in chips) + "</div>"
+           + f'<div class="partition" role="note"><b>Data partition.</b> {esc(partition_note(r))}</div></header>']
 
     # executive summary
     out.append('<section id="summary"><h2>Executive summary</h2><div class="tiles">'
@@ -417,7 +423,12 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
                + table(["field", "value"], [["metriclens", m.metriclens_version], ["python", m.python],
                                             ["packages", m.packages], ["seed", m.seed],
                                             ["rule versions", m.rule_versions], ["profile options", m.profile_options],
-                                            ["budget", m.budget], ["benchmark manifest", m.benchmark]])
+                                            ["budget", m.budget], ["benchmark manifest", m.benchmark],
+                                            ["revision", m.revision]])
+               + "<h3>History</h3>" + table(["revision", "step", "details"],
+                                             [[h_["revision"], h_["action"],
+                                               {k: v for k, v in h_.items() if k not in ("revision", "action")}]
+                                              for h_ in m.history])
                + "</details></section>")
     return "".join(out), figs
 

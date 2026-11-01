@@ -8,7 +8,7 @@
   ],
   [
    "f.unsupported_columns",
-   "info",
+   "warn",
    "fired"
   ]
  ],
@@ -32,9 +32,9 @@
    "split"
   ],
   [
-   "d.exclude_unsupported",
-   "procedural",
-   "applied",
+   "d.unsupported_columns",
+   "review",
+   "needs_review",
    "columns"
   ],
   [
@@ -77,7 +77,7 @@
   [
    "columns",
    [
-    "d.exclude_unsupported"
+    "d.unsupported_columns"
    ]
   ],
   [

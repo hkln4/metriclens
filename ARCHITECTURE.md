@@ -27,7 +27,7 @@ df, target, [estimator, groups, time_col, context, answers]
    │
    ├─ Report.answer(...)  re-runs the rules with new answers (no data needed)
    ├─ Report.verify(df)   verify.py: bounded experiments on dev rows
-   ├─ Report.export()     export.py: Pipeline + CV + scoring from eligible decisions
+   ├─ Report.export()     export.py: model recipe + preprocessor + CV + scoring from eligible decisions
    ├─ Report.interpret()  llm/: optional, schema-constrained interpretation
    ├─ Report.to_html()    render/: single-file report
    └─ ml.review(...)      posttrain.py: assumptions vs. actual errors
@@ -53,17 +53,26 @@ df, target, [estimator, groups, time_col, context, answers]
    to a threshold. Interval straddles the threshold → `uncertain`.
 2. **Data-modifying actions are never procedural.** Dropping duplicates, rows
    or columns can be a collection artefact or legitimate data; only the user or
-   an experiment can decide. The narrow exceptions are constant columns (carry
-   no information) and raw datetime/text/string-id columns (no meaningful
-   encoding), and both are listed.
+   an experiment can decide. The one exception is constant columns, which carry
+   no information. Raw datetime/text/string-id columns are left out of the
+   export because v1 cannot encode them — a capability limit reported as a
+   review item, not a judgement that they are uninformative.
 3. **The data cannot choose the metric.** It can say which metrics mislead
    (evidence-backed `avoid`); what to optimize depends on what errors cost.
-4. **Experiments are bounded.** One change at a time against a fixed base,
-   identical folds, corrected paired test, Holm across the run, hard budget.
+4. **Experiments are bounded, and their inference matches the split.** One
+   change at a time against a fixed base, identical folds, hard budget. The
+   test follows the protocol: corrected repeated k-fold t-test (repeated or
+   grouped k-fold), no p-value for time-ordered folds. "Improved" needs
+   direction, Holm-adjusted significance and a practical effect threshold.
    Proxy models give sensitivity analysis; only the user's estimator verifies.
-5. **The EDA must not leak into the final estimate.** The holdout is reserved
+5. **Split precedence is explicit.** time_col > groups > stratification;
+   time_col disables stratification (stated in the decision); groups and
+   time_col together raise instead of silently dropping one.
+6. **The EDA must not leak into the final estimate.** The holdout is reserved
    before profiling and is never used by rules or experiments.
-6. **The LLM is above the trust boundary.** It sees an allowlisted payload
+7. **Reports are immutable.** answer / verify / interpret return a new report
+   with an incremented manifest revision and a history entry.
+8. **The LLM is above the trust boundary.** It sees an allowlisted payload
    (inspectable with `llm_payload()`), must cite existing ids, and can only
    suggest; `answer()` is the only way an answer is applied.
 

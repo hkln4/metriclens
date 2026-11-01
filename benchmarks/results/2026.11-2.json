@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2026.11-1",
+  "manifest_version": "2026.11-2",
   "metriclens_version": "0.1.0",
   "python": "3.13.1",
   "protocol": "Each case runs ml.analyze with default options and seed 0. A check passes when the rule's finding matches the expectation: fired / none / uncertain (near threshold).",
@@ -523,62 +523,62 @@
   ],
   "rules": {
     "target_skew": {
-      "cases": 2,
-      "correct": 2
+      "checks": 2,
+      "passed": 2
     },
     "leakage_hint": {
-      "cases": 8,
-      "correct": 8
+      "checks": 8,
+      "passed": 8
     },
     "duplicate_rows": {
-      "cases": 6,
-      "correct": 6
+      "checks": 6,
+      "passed": 6
     },
     "id_like_columns": {
-      "cases": 8,
-      "correct": 8
+      "checks": 8,
+      "passed": 8
     },
     "high_missingness": {
-      "cases": 2,
-      "correct": 2
+      "checks": 2,
+      "passed": 2
     },
     "small_data": {
-      "cases": 3,
-      "correct": 3
+      "checks": 3,
+      "passed": 3
     },
     "constant_columns": {
-      "cases": 2,
-      "correct": 2
+      "checks": 2,
+      "passed": 2
     },
     "zero_inflation": {
-      "cases": 2,
-      "correct": 2
+      "checks": 2,
+      "passed": 2
     },
     "heavy_tailed_target": {
-      "cases": 1,
-      "correct": 1
+      "checks": 1,
+      "passed": 1
     },
     "class_imbalance": {
-      "cases": 5,
-      "correct": 5
+      "checks": 5,
+      "passed": 5
     },
     "temporal_order": {
-      "cases": 1,
-      "correct": 1
+      "checks": 1,
+      "passed": 1
     },
     "high_cardinality": {
-      "cases": 1,
-      "correct": 1
+      "checks": 1,
+      "passed": 1
     },
     "task_confirmation": {
-      "cases": 1,
-      "correct": 1
+      "checks": 1,
+      "passed": 1
     }
   },
   "verification": [
     {
       "dataset": "sklearn:load_breast_cancer",
-      "seconds": 7.8,
+      "seconds": 7.7,
       "dev_metric": "accuracy",
       "decisions": {
         "d.power_transform": "inconclusive"
@@ -610,14 +610,14 @@
     },
     {
       "dataset": "sklearn:load_diabetes",
-      "seconds": 2.5,
+      "seconds": 1.8,
       "dev_metric": "neg_mean_absolute_error",
       "decisions": {},
       "experiments": []
     },
     {
       "dataset": "sklearn:load_wine",
-      "seconds": 2.6,
+      "seconds": 2.4,
       "dev_metric": "accuracy",
       "decisions": {},
       "experiments": []

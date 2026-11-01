@@ -107,8 +107,12 @@ def analyze(
     _validate_answers(ctx_state.answers, out)
     figures = build_figures(dev_s, profile, out.evidence, out.decisions)
 
-    report = _make_report(profile, ctx_state, out, figures, experiments=[], baseline={},
-                          manifest=_manifest(seed, options, None))
+    manifest = _manifest(seed, options, None)
+    manifest.history = [{"revision": 0, "action": "analyze", "target": target, "task": task_t.value,
+                         "task_inferred": inferred, "answers": dict(ctx_state.answers),
+                         "groups": ctx_state.groups, "time_col": time_col, "holdout": holdout,
+                         "estimator": ctx_state.estimator}]
+    report = _make_report(profile, ctx_state, out, figures, experiments=[], baseline={}, manifest=manifest)
     report._holdout_positions = hold_pos
     report._estimator = estimator
     if verify:
@@ -191,6 +195,13 @@ def _make_report(profile, ctx_state, out: RuleOutput, figures, experiments, base
     )
 
 
+def _next_revision(manifest: Manifest, action: str, **details: Any) -> Manifest:
+    """A new manifest whose history records this step; earlier reports keep theirs."""
+    rev = manifest.revision + 1
+    entry = {"revision": rev, "action": action, **details}
+    return manifest.model_copy(update={"revision": rev, "history": [*manifest.history, entry]})
+
+
 def _carry(report: Report, new: Report) -> Report:
     new._holdout_positions = report._holdout_positions
     new._estimator = report._estimator
@@ -244,8 +255,9 @@ def _apply_answers(report: Report, answers: dict[str, str]) -> Report:
     _apply_experiments(out, report.experiments, {}, prev)
     figures = [f.model_copy(deep=True) for f in report.figures]
     _link(figures, out.evidence, out.decisions)
+    manifest = _next_revision(report.manifest, "answer", answers=answers)
     new = _make_report(report.profile, ctx_state, out, figures, report.experiments, report.baseline,
-                       report.manifest, llm=report.llm)
+                       manifest, llm=report.llm)
     return _carry(report, new)
 
 
@@ -283,7 +295,10 @@ def _verify(report: Report, df: pd.DataFrame, estimator: Any = None, budget: Bud
             figures.append(experiment_figure(d, exps))
     _link(figures, out.evidence, out.decisions)
     figures.sort(key=lambda f: (f.priority, f.id))
-    manifest = report.manifest.model_copy(update={"budget": budget.model_dump()})
+    manifest = _next_revision(report.manifest.model_copy(update={"budget": budget.model_dump()}), "verify",
+                              estimator=_describe(estimator) or "proxies (linear + tree)",
+                              experiments=len(experiments), budget=budget.model_dump(),
+                              protocol=experiments[0].protocol if experiments else None)
     new = _make_report(report.profile, ctx_state, out, figures, experiments, baseline, manifest, llm=report.llm)
     new = _carry(report, new)
     new._estimator = estimator

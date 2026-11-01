@@ -46,7 +46,7 @@ def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                finding_ids=[f], evidence_ids=[e])
 
 
-@rule("validation_split", "1", thresholds={"small_data_rows": 1000},
+@rule("validation_split", "2", thresholds={"small_data_rows": 1000},
       description="Choose the cross-validation splitter from task, groups and time.")
 def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     n = p.dataset.n_rows
@@ -56,12 +56,17 @@ def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     if ctx.time_col:
         name, params = "TimeSeriesSplit", {"n_splits": k}
         why = f"rows are ordered in time by '{ctx.time_col}'; each fold trains on the past and tests on the future"
+        if p.task is CLS:
+            why += ("; class stratification is not applied under time ordering, so check that every class "
+                    "appears in each test window")
     elif ctx.groups:
         name = "StratifiedGroupKFold" if p.task is CLS else "GroupKFold"
         params = {"n_splits": k}
         if p.task is CLS:
             params.update(shuffle=True, random_state=0)
         why = f"user-supplied groups ({ctx.groups}) keep every group on one side of each split"
+        if p.task is CLS:
+            why += "; class ratios are preserved only approximately, since whole groups move together"
     elif p.task is CLS:
         min_class = min(p.target.stats.get("class_counts", {"_": k}).values())
         ev.append(out.ev("target.min_class_count", "Smallest class count", min_class, "class counts on dev rows"))
@@ -292,7 +297,7 @@ def constant_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": cols}))
 
 
-@rule("unsupported_columns", "1")
+@rule("unsupported_columns", "2")
 def unsupported_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     cols = [c for c, cp in p.columns.items()
             if cp.kind in (ColumnKind.DATETIME, ColumnKind.TEXT)
@@ -300,16 +305,21 @@ def unsupported_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     if not cols:
         return
     kinds = {c: p.columns[c].kind.value for c in cols}
-    e = out.ev("columns.unsupported", "Columns needing feature engineering", kinds,
+    e = out.ev("columns.unsupported", "Columns not usable raw in v1", kinds,
                "column-kind inference (datetime, free text, string identifiers)", columns=cols)
-    f = out.finding("unsupported_columns", Severity.INFO, Trigger.FIRED,
-                    f"{len(cols)} column(s) cannot be used raw by a tabular model: {kinds}.", [e], cols)
-    out.decision("exclude_unsupported", f"Leave {len(cols)} raw datetime/text/id column(s) out of the features",
-                 DecisionClass.PROCEDURAL, "columns",
-                 f"Exclude {cols} from the exported feature matrix; engineer features from them yourself if they matter.",
-                 "Raw timestamps, free text and string identifiers have no meaningful numeric encoding.",
-                 risk="If one of these identifies an entity with repeated rows, pass it as groups= instead.",
-                 finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": cols}))
+    f = out.finding("unsupported_columns", Severity.WARN, Trigger.FIRED,
+                    f"{len(cols)} column(s) are not supported raw by the v1 tabular pipeline: {kinds}. "
+                    "They may carry strong signal.", [e], cols)
+    out.decision("unsupported_columns", f"Engineer features from {len(cols)} datetime/text/id column(s)",
+                 DecisionClass.REVIEW, "columns",
+                 f"{cols} are not in the exported feature matrix because v1 has no encoder for raw datetimes, "
+                 "free text or string identifiers. If they matter, derive features yourself (date parts, elapsed "
+                 "time, text vectors, entity statistics) and re-run.",
+                 "Unsupported in v1 is a capability limit of metriclens, not a judgement that these columns are "
+                 "uninformative; dates and text are often among the strongest signals.",
+                 risk="Leaving them out can cost real signal. If one identifies an entity with repeated rows, pass it "
+                      "as groups=; if one orders rows in time, pass it as time_col=.",
+                 finding_ids=[f], evidence_ids=[e])
 
 
 @rule("id_like_columns", "1", thresholds={"unique_ratio": 0.95})
@@ -332,7 +342,7 @@ def id_like_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                    finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": [c]}))
 
 
-@rule("leakage_hint", "1", thresholds={"association": 0.95, "uncertain_association": 0.90, "abs_pearson": 0.98})
+@rule("leakage_hint", "2", thresholds={"association": 0.95, "uncertain_association": 0.90, "abs_pearson": 0.98})
 def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     for c, cp in p.columns.items():
         a = cp.association
@@ -355,8 +365,9 @@ def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
             continue
         sev = Severity.CRITICAL if (a or 0) >= 0.99 or (pr or 0) >= 0.995 else Severity.WARN
         f = out.finding(f"leakage_hint.{c}", sev, Trigger.FIRED,
-                        f"Leakage hint — manual review required: '{c}' alone predicts the target "
-                        f"(held-out score {a if a is not None else float('nan'):.3f}).", evs, [c])
+                        f"Single-feature predictive leakage hint — manual review required: '{c}' alone predicts "
+                        f"the target (held-out score {a if a is not None else float('nan'):.3f}). High predictive "
+                        "power is not proof of leakage; genuinely strong features look the same.", evs, [c])
         contextual(out, ctx, qid=f"leakage.{c}",
                    question=f"Is '{c}' known at prediction time, before the target is observed?",
                    options=[("no", "No, it is only known afterwards", "drop it from the features"),

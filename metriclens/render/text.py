@@ -5,14 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from ..rules.metrics import label, natural
-from .common import CLASS_LABEL, fmt, fmt_ci, headline, priorities, status_word
+from .common import CLASS_LABEL, fmt, fmt_ci, headline, partition_note, priorities, status_word
 
 
 def render_text(report: Any, md: bool) -> str:
     H = (lambda t: f"## {t}") if md else (lambda t: t.upper())
     B = (lambda t: f"**{t}**") if md else (lambda t: t)
     dmap = {d.id: d for d in report.decisions}
-    lines = ["# metriclens report" if md else "METRICLENS REPORT", "", headline(report), ""]
+    lines = ["# metriclens report" if md else "METRICLENS REPORT", "", headline(report), "",
+             "Data partition: " + partition_note(report), ""]
 
     pr = priorities(report)
     if pr:
@@ -67,7 +68,9 @@ def render_text(report: Any, md: bool) -> str:
         lines.append(H("Experiments (development evidence)"))
         for e in report.experiments:
             lines.append(f"- {e.decision_id} · {e.family} ({e.estimator}) · {label(e.metric)}: "
-                         f"diff {fmt(e.mean_diff)} {fmt_ci(e.ci)}, Holm p={fmt(e.p_adjusted)} -> {e.outcome}")
+                         f"diff {fmt(e.mean_diff)} {fmt_ci(e.ci)}, Holm p={fmt(e.p_adjusted)}, "
+                         f"practical threshold {fmt(e.min_effect)}, {e.folds_improved}/{len(e.fold_diffs)} folds "
+                         f"improved -> {e.outcome} [{e.protocol}]")
         if report.baseline.get("dummy", {}).get("mean") is not None:
             b = report.baseline
             mt = b["metric"]

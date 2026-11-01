@@ -90,6 +90,20 @@ def priorities(report: Any, k: int = 6) -> list[Any]:
     return sorted(cand, key=key)[:k]
 
 
+def partition_note(report: Any) -> str:
+    p = report.profile
+    h = p.holdout
+    dev = f"{p.dataset.n_rows:,} development rows"
+    if p.sampling.get("sampled"):
+        dev += f" (a seeded sample of {p.sampling['of_rows']:,})"
+    if h.get("used"):
+        return (f"Every statistic, figure, decision and experiment in this report comes from {dev}. "
+                f"The holdout ({h['n_holdout']:,} rows, {h['method']}) was set aside before profiling and was never "
+                "read; use it once, at the end, via report.split(df).")
+    return (f"Every statistic, figure, decision and experiment in this report comes from {dev}. No holdout was "
+            f"reserved ({h.get('reason', '')}), so a final estimate needs nested cross-validation.")
+
+
 def headline(report: Any) -> str:
     c = summary_counts(report)
     p = report.profile
@@ -103,5 +117,5 @@ def headline(report: Any) -> str:
     return " ".join(parts)
 
 
-__all__ = ["fmt", "fmt_ci", "tone", "ICON", "SEV_TONE", "CLASS_LABEL", "CLASS_HELP", "summary_counts",
-           "priorities", "headline", "status_word"]
+__all__ = ["partition_note", "fmt", "fmt_ci", "tone", "ICON", "SEV_TONE", "CLASS_LABEL", "CLASS_HELP",
+           "summary_counts", "priorities", "headline", "status_word"]

@@ -84,3 +84,16 @@ def test_v0_compat_properties(imb_df):
     assert rep.recommended_metrics["primary"]
     assert "accuracy (alone)" in rep.avoid
     assert rep.validation_strategy
+
+
+def test_partition_is_stated_prominently(reg_df):
+    rep = ml.analyze(reg_df, "y")
+    h = rep.to_html()
+    assert 'class="partition"' in h and "was never read" in h
+    assert h.index('class="partition"') < h.index('id="summary"')
+    assert "Data partition:" in rep.to_text()
+
+
+def test_benchmark_wording_is_a_pass_rate(imb_df):
+    h = ml.analyze(imb_df, "y").to_html()
+    assert "rule detection pass rate on benchmark" in h and "correct on" not in h
