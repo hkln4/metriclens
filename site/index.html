@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>prefit — decision-driven EDA for tabular ML</title>
+<meta name="description" content="prefit turns pre-training data analysis into evidence-backed, verifiable decisions and a scikit-learn model recipe.">
+<style>
+:root{color-scheme:light;--surface:#fcfcfb;--surface-2:#f3f2ef;--border:#dddcd6;--text:#0b0b0b;--text-2:#52514e;
+--muted:#76756f;--link:#1c5cab;--accent:#2a78d6;--accent-soft:rgba(42,120,214,.12);--good:#0ca30c;--warn:#fab219}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--surface:#1a1a19;--surface-2:#242423;
+--border:#3a3a36;--text:#fff;--text-2:#c3c2b7;--muted:#94938b;--link:#86b6ef;--accent:#3987e5;--accent-soft:rgba(57,135,229,.18)}}
+:root[data-theme="dark"]{color-scheme:dark;--surface:#1a1a19;--surface-2:#242423;--border:#3a3a36;--text:#fff;
+--text-2:#c3c2b7;--muted:#94938b;--link:#86b6ef;--accent:#3987e5;--accent-soft:rgba(57,135,229,.18)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:920px;margin:0 auto;padding:40px 16px 64px}
+a{color:var(--link)}
+header h1{font-size:2.4rem;margin:0;letter-spacing:-.02em}
+header p.tag{font-size:1.2rem;color:var(--text-2);margin:6px 0 20px;max-width:46rem}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 8px}
+.btn{display:inline-block;padding:9px 16px;border-radius:8px;border:1px solid var(--border);text-decoration:none;
+color:var(--text);background:var(--surface);font-weight:600}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9rem}
+pre{background:var(--surface-2);padding:14px 16px;border-radius:10px;overflow-x:auto;line-height:1.5}
+h2{font-size:1.3rem;margin:44px 0 12px;padding-top:10px;border-top:1px solid var(--border)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.card{border:1px solid var(--border);border-radius:12px;padding:14px 16px;background:var(--surface)}
+.card h3{margin:0 0 6px;font-size:1rem}.card p{margin:0;color:var(--text-2);font-size:.95rem}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.93rem}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--text-2);font-weight:600}
+.note{border-left:4px solid var(--accent);background:var(--accent-soft);padding:10px 14px;border-radius:8px}
+footer{margin-top:48px;color:var(--muted);font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>prefit</h1>
+  <p class="tag">Decision-driven EDA for tabular supervised learning. Run it <em>before</em> you fit: it turns what it
+  measures into a short list of decisions, shows the evidence behind each one, tests the ones that depend on your
+  model, and exports only what is safe, confirmed or verified.</p>
+  <pre><code>pip install "prefit[verify]"</code></pre>
+  <div class="actions">
+    <a class="btn primary" href="report.html">Open the example report</a>
+    <a class="btn" href="https://github.com/hkln4/prefit">GitHub</a>
+    <a class="btn" href="https://pypi.org/project/prefit/">PyPI</a>
+  </div>
+</header>
+
+<h2>What it does</h2>
+<div class="grid">
+  <div class="card"><h3>Measures, then decides</h3><p>Profiles your development data and turns each measurement into a
+  decision with its evidence, 95% interval, rule version and threshold. Near-threshold results are marked uncertain.</p></div>
+  <div class="card"><h3>Tests instead of assuming</h3><p>Data- and model-dependent changes (log target, power transform,
+  target encoding, class weights) are tested with bounded experiments on identical folds, with a practical effect threshold.</p></div>
+  <div class="card"><h3>Asks what only you know</h3><p>Which error is costlier, whether a column exists at prediction time,
+  whether time order matters: these become questions, and nothing changes until you answer.</p></div>
+  <div class="card"><h3>Exports only what holds</h3><p>A scikit-learn model recipe with applied, confirmed or verified steps,
+  plus an explicit list of what was left out and why.</p></div>
+</div>
+
+<h2>Quickstart</h2>
+<pre><code>import prefit as pf
+from sklearn.ensemble import HistGradientBoostingRegressor
+
+model = HistGradientBoostingRegressor(random_state=0)
+dev_df, test_df = pf.split(df, target="price", test_size=0.2, strategy="random")
+
+report = pf.analyze(dev_df, target="price", estimator=model)
+print(report)                                   # roadmap: one line of why / do per decision
+report = report.answer({"metric_priority": "typical_error"})
+report = report.verify(dev_df)                  # bounded experiments with your model
+report.to_html("report.html")
+
+built = report.export()                         # model recipe + CV + scoring
+fitted = built.model.fit(dev_df[built.feature_columns], dev_df["price"])
+pf.review(test_df["price"], fitted.predict(test_df[built.feature_columns]), report)</code></pre>
+
+<h2>Four kinds of decision</h2>
+<div class="tw"><table>
+<thead><tr><th>class</th><th>what it is</th><th>enters the model recipe when</th></tr></thead>
+<tbody>
+<tr><td><b>procedural</b></td><td>how to evaluate: fit preprocessing inside folds, stratify, keep split columns and the holdout out</td><td>always</td></tr>
+<tr><td><b>conditional</b></td><td>may help or hurt depending on data and model</td><td>an experiment with your estimator verifies it</td></tr>
+<tr><td><b>contextual</b></td><td>cannot be decided from data: the cost of errors, availability at prediction time</td><td>you answer the question</td></tr>
+<tr><td><b>review</b></td><td>needs a human look: duplicates, informative missingness, infinite values, raw dates and text</td><td>never; it is a to-do</td></tr>
+</tbody>
+</table></div>
+
+<h2>Honest by construction</h2>
+<div class="note">
+<p>Leakage is only ever a hint for manual review. Proxy-model results are a sensitivity analysis, not a verdict on your
+model. Experiment results are development evidence; the generalization claim comes from data the analysis never read,
+which prefit checks by fingerprint. Reports are immutable, and every change is a new revision with a history entry.</p>
+</div>
+
+<footer>
+  <p>MIT licensed · <a href="https://github.com/hkln4/prefit#readme">README</a> ·
+  <a href="https://github.com/hkln4/prefit/blob/main/CHANGELOG.md">Changelog</a> ·
+  The example report is generated by <code>examples/quickstart.py</code> on California Housing.</p>
+</footer>
+</main>
+</body>
+</html>

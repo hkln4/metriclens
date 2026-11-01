@@ -6,10 +6,8 @@ change the public API.
 
 ## 0.1.0 — 2026-11-01
 
-First release of the decision-driven design. Replaces the v0 `Roadmap` API.
-Developed as `metriclens`; published as **prefit** (`pip install prefit`,
-`import prefit as pf`) because the `metriclens` name is taken on PyPI by an
-unrelated project.
+First release of **prefit** (`pip install prefit`, `import prefit as pf`), the
+decision-driven design. Replaces the v0 `Roadmap` API.
 
 ### Added
 - `pf.analyze()` returns a `Report`: Evidence → Finding → Decision chain with

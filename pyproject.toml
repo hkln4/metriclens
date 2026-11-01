@@ -57,7 +57,8 @@ dev = [
 prefit = "prefit.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/hkln4/prefit"
+Homepage = "https://hkln4.github.io/prefit/"
+"Example report" = "https://hkln4.github.io/prefit/report.html"
 Repository = "https://github.com/hkln4/prefit"
 Issues = "https://github.com/hkln4/prefit/issues"
 Changelog = "https://github.com/hkln4/prefit/blob/main/CHANGELOG.md"

@@ -13,6 +13,9 @@ steps that are safe, that you confirmed, or that an experiment supported.
 It is not AutoML: it does not choose a model or tune hyperparameters, and it
 never applies an unconfirmed assumption silently.
 
+**[Example report](https://hkln4.github.io/prefit/report.html)** ·
+[Project page](https://hkln4.github.io/prefit/) · [PyPI](https://pypi.org/project/prefit/)
+
 ```bash
 pip install "prefit[verify]"        # core + experiments/export (scikit-learn, scipy)
 pip install "prefit[verify,report]" # + plotly, for fully offline HTML reports
@@ -66,8 +69,9 @@ From the shell:
 prefit report dev.csv --target price --verify --answer metric_priority=typical_error --out report.html
 ```
 
-An example report produced by `examples/quickstart.py` is in
-[`examples/output/california_report.html`](https://github.com/hkln4/prefit/blob/main/examples/output/california_report.html).
+An example report produced by `examples/quickstart.py` is live at
+[hkln4.github.io/prefit/report.html](https://hkln4.github.io/prefit/report.html) (source:
+[`examples/output/california_report.html`](https://github.com/hkln4/prefit/blob/main/examples/output/california_report.html)).
 
 ---
 
