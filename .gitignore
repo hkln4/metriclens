@@ -4,6 +4,11 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 .venv/
+.mypy_cache/
+.ruff_cache/
+.coverage
+dist/
 
 test.ipynb
-ARCHITECTURE.md
+# private v0 design notes (kept locally, not published)
+ARCHITECTURE.v0.md

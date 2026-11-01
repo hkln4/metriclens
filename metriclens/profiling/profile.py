@@ -1,9 +1,8 @@
 """The DataProfile contract: deterministic output of the profiling layer.
 
-This is the boundary artifact between "looking at the data" and "interpreting
-it". The profiler produces ONLY this — pure statistics, no recommendations.
-It is JSON-serializable so it can be (a) fed to the LLM and (b) asserted against
-in tests.
+The boundary artifact between "looking at the data" and "deciding". It holds
+only aggregated statistics — never raw rows — and is JSON-serializable, so it can
+be stored in the report, asserted against in tests, and (in part) sent to an LLM.
 """
 
 from __future__ import annotations
@@ -12,47 +11,79 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..enums import Modality, Task
+from ..enums import ColumnKind, Modality, Task
 
 
-class CoreStats(BaseModel):
-    """Modality-independent statistics.
+class ColumnProfile(BaseModel):
+    name: str
+    kind: ColumnKind
+    kind_reason: str
+    dtype: str
+    missing_fraction: float
+    missing_ci: tuple[float, float] | None = None
+    cardinality: int
+    unique_ratio: float
+    stats: dict[str, Any] = Field(default_factory=dict)
+    ci: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    # single-feature held-out predictive score (see stats.single_feature_score)
+    association: float | None = None
 
-    These hold for any modality — class imbalance matters just as much in image
-    classification as in tabular. Anything modality-specific lives in
-    DataProfile.modality_stats instead.
-    """
 
-    n_samples: int
-    n_features: int | None = None
-    n_classes: int | None = None
-    # class label -> count, when the task is classification
-    class_counts: dict[str, int] | None = None
-    # max_count / min_count; 1.0 means perfectly balanced
-    imbalance_ratio: float | None = None
-    # rough estimate of mislabeled fraction, when computable
-    label_noise_estimate: float | None = None
-    # free-form notes about train/val/test split issues
-    split_info: dict[str, Any] = Field(default_factory=dict)
+class TargetProfile(BaseModel):
+    name: str
+    task: Task
+    task_inferred: bool
+    task_evidence: dict[str, Any] = Field(default_factory=dict)
+    n_missing: int
+    missing_fraction: float
+    stats: dict[str, Any] = Field(default_factory=dict)
+    ci: dict[str, tuple[float, float]] = Field(default_factory=dict)
+
+
+class DatasetProfile(BaseModel):
+    n_rows: int                 # rows profiled (after holdout and sampling)
+    n_rows_input: int           # rows the user passed in
+    n_columns: int
+    n_features: int
+    duplicate_rows: int
+    duplicate_fraction: float
+    # groups of rows with identical features but different targets
+    conflicting_duplicate_groups: int = 0
+    kind_counts: dict[str, int] = Field(default_factory=dict)
+    missing_columns: list[str] = Field(default_factory=list)
+    # Jaccard co-missingness between the most-missing columns
+    missing_cooccurrence: dict[str, Any] = Field(default_factory=dict)
+
+
+class Relations(BaseModel):
+    association_method: str = (
+        "single-feature held-out score: rank nearest-neighbours (numeric) or a category "
+        "lookup table, fit on a random half and scored on the other half (R^2 for "
+        "regression, chance-rescaled balanced accuracy for classification)")
+    corr_method: str = "Spearman rank correlation"
+    corr_columns: list[str] = Field(default_factory=list)
+    corr_matrix: list[list[float | None]] = Field(default_factory=list)
+    high_corr_pairs: list[dict[str, Any]] = Field(default_factory=list)
+    # |Pearson r| of numeric features with a numeric target (regression only)
+    pearson_target: dict[str, float] = Field(default_factory=dict)
 
 
 class DataProfile(BaseModel):
-    """Complete deterministic profile of a dataset.
-
-    Composed of a fixed `core` plus a modality-specific `modality_stats` payload
-    that only contains keys relevant to this modality. Rules read whichever keys
-    exist; a rule that depends on a key the profiler never produced simply
-    cannot fire (see Finding.evidence — this is what makes irrelevant metrics
-    structurally impossible to recommend).
-    """
-
-    modality: Modality
+    modality: Modality = Modality.TABULAR
     task: Task
-    # True when `task` was inferred rather than supplied by the user, so the
-    # orchestration layer knows to confirm it.
-    task_inferred: bool = False
-    core: CoreStats
-    # modality-specific statistics; only applicable keys are present.
-    # tabular example: {"target_skew": 2.3, "outlier_pct": 0.04, ...}
-    # image example:   {"resolution_dist": ..., "channel_stats": ..., ...}
-    modality_stats: dict[str, Any] = Field(default_factory=dict)
+    task_inferred: bool
+    target: TargetProfile
+    dataset: DatasetProfile
+    columns: dict[str, ColumnProfile]
+    relations: Relations
+    # columns that are not features: {"user_id": "groups", "ts": "time_col"}
+    roles: dict[str, str] = Field(default_factory=dict)
+    sampling: dict[str, Any] = Field(default_factory=dict)
+    holdout: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def feature_columns(self) -> list[str]:
+        return list(self.columns)
+
+    def kind_of(self, kind: ColumnKind) -> list[str]:
+        return [c for c, p in self.columns.items() if p.kind is kind]

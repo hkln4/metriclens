@@ -1,0 +1,57 @@
+{
+  "manifest_version": "2026.11-1",
+  "rules": {
+    "target_skew": {
+      "cases": 2,
+      "correct": 2
+    },
+    "leakage_hint": {
+      "cases": 8,
+      "correct": 8
+    },
+    "duplicate_rows": {
+      "cases": 6,
+      "correct": 6
+    },
+    "id_like_columns": {
+      "cases": 8,
+      "correct": 8
+    },
+    "high_missingness": {
+      "cases": 2,
+      "correct": 2
+    },
+    "small_data": {
+      "cases": 3,
+      "correct": 3
+    },
+    "constant_columns": {
+      "cases": 2,
+      "correct": 2
+    },
+    "zero_inflation": {
+      "cases": 2,
+      "correct": 2
+    },
+    "heavy_tailed_target": {
+      "cases": 1,
+      "correct": 1
+    },
+    "class_imbalance": {
+      "cases": 5,
+      "correct": 5
+    },
+    "temporal_order": {
+      "cases": 1,
+      "correct": 1
+    },
+    "high_cardinality": {
+      "cases": 1,
+      "correct": 1
+    },
+    "task_confirmation": {
+      "cases": 1,
+      "correct": 1
+    }
+  }
+}

@@ -1,8 +1,8 @@
 """Pluggable LLM provider interface.
 
-v0 ships only the Anthropic implementation, but the interpreter depends on this
-abstract interface rather than on Anthropic directly, so swapping in another
-provider later is a single new file with no changes elsewhere.
+The interpreter depends only on this interface. Shipped implementations:
+Anthropic, Gemini, and a local OpenAI-compatible endpoint (Ollama, llama.cpp,
+vLLM) for fully local use. Subclass Provider to plug in anything else.
 """
 
 from __future__ import annotations
@@ -11,11 +11,9 @@ from abc import ABC, abstractmethod
 
 
 class Provider(ABC):
-    """Minimal contract an LLM backend must satisfy for the interpreter.
+    """Minimal contract: send a system + user prompt, get text back."""
 
-    Deliberately tiny: the interpreter only needs to send a constructed prompt
-    and get back text. Nothing about a specific vendor leaks into this contract.
-    """
+    model: str = "?"
 
     @abstractmethod
     def complete(self, system: str, user: str) -> str:

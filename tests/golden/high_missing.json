@@ -1,0 +1,97 @@
+{
+ "task": "regression",
+ "findings": [
+  [
+   "f.high_missingness",
+   "warn",
+   "fired"
+  ]
+ ],
+ "decisions": [
+  [
+   "d.cv",
+   "procedural",
+   "applied",
+   "split"
+  ],
+  [
+   "d.holdout",
+   "procedural",
+   "applied",
+   "final"
+  ],
+  [
+   "d.missingness_review",
+   "review",
+   "needs_review",
+   "data_review"
+  ],
+  [
+   "d.drop_mostly_missing",
+   "conditional",
+   "proposed",
+   "preprocessing"
+  ],
+  [
+   "d.fit_in_fold",
+   "procedural",
+   "applied",
+   "preprocessing"
+  ],
+  [
+   "d.metric",
+   "contextual",
+   "awaiting_user",
+   "metrics"
+  ]
+ ],
+ "questions": [
+  "q.metric_priority"
+ ],
+ "metric_plan": [
+  [
+   "neg_mean_absolute_error",
+   "neg_root_mean_squared_error"
+  ],
+  "neg_mean_absolute_error"
+ ],
+ "figures": [
+  "fig.target",
+  "fig.association",
+  "fig.missingness",
+  "fig.correlation"
+ ],
+ "roadmap": [
+  [
+   "split",
+   [
+    "d.cv"
+   ]
+  ],
+  [
+   "data_review",
+   [
+    "d.missingness_review"
+   ]
+  ],
+  [
+   "preprocessing",
+   [
+    "d.drop_mostly_missing",
+    "d.fit_in_fold"
+   ]
+  ],
+  [
+   "metrics",
+   [
+    "d.metric"
+   ]
+  ],
+  [
+   "final",
+   [
+    "d.holdout"
+   ]
+  ]
+ ]
+}

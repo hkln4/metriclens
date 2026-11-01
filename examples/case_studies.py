@@ -13,14 +13,11 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.compose import TransformedTargetRegressor
-from sklearn.datasets import (fetch_california_housing, load_breast_cancer,
-                              load_diabetes)
-from sklearn.ensemble import (HistGradientBoostingRegressor,
-                              RandomForestClassifier)
+from sklearn.datasets import fetch_california_housing, load_breast_cancer, load_diabetes
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestClassifier
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import (mean_absolute_error, r2_score,
-                             root_mean_squared_error)
-from sklearn.model_selection import (KFold, cross_val_predict, cross_val_score)
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.model_selection import KFold, cross_val_predict, cross_val_score
 
 import metriclens as ml
 
@@ -31,8 +28,12 @@ def _stop(msg: str) -> None:
     sys.exit(1)
 
 
-def _finding(roadmap, rule_id):
-    return next((f for f in roadmap.findings if f.id == rule_id), None)
+def _finding(report, rule_id):
+    return next((f for f in report.findings if f.rule_id == rule_id), None)
+
+
+def _evidence(report, finding):
+    return {report.evidence[e].label: report.evidence[e].value for e in finding.evidence_ids}
 
 
 def _table(title: str, subtitle: str, rows: list[tuple[str, str, str]],
@@ -49,14 +50,15 @@ def _table(title: str, subtitle: str, rows: list[tuple[str, str, str]],
 # --------------------------------------------------------------------------- #
 def case1() -> dict:
     df = fetch_california_housing(as_frame=True).frame
-    roadmap = ml.analyze(df, target="MedHouseVal", use_llm=False)
-    fnd = _finding(roadmap, "target_skew")
+    # holdout=None: these studies run their own CV on the full data
+    report = ml.analyze(df, target="MedHouseVal", task="regression", holdout=None)
+    fnd = _finding(report, "target_skew")
     if fnd is None:
         _stop("case 1: expected 'target_skew' to fire on California Housing.")
 
     X = df.drop(columns="MedHouseVal")
     y = df["MedHouseVal"].to_numpy()
-    cv = roadmap.make_sklearn()["cv"]  # KFold recommended by the roadmap
+    cv = report.export().cv  # the splitter chosen by the procedural CV decision
 
     def model():
         return HistGradientBoostingRegressor(random_state=0)
@@ -76,15 +78,15 @@ def case1() -> dict:
     r2_g = r2_score(y, pred_guided)
     rel = (mae_n - mae_g) / mae_n * 100
 
-    rev_n = ml.review(y, pred_naive, roadmap=roadmap)
-    rev_g = ml.review(y, pred_guided, roadmap=roadmap)
-    held_n = next(c.held for c in rev_n.checks)
-    held_g = next(c.held for c in rev_g.checks)
+    rev_n = ml.review(y, pred_naive, report)
+    rev_g = ml.review(y, pred_guided, report)
+    held_n = next(c.held for c in rev_n.checks if c.finding_id)
+    held_g = next(c.held for c in rev_g.checks if c.finding_id)
     verdict = {True: "HELD", False: "did not hold", None: "n/a"}
 
     _table(
         "CASE 1 — Skewed target (California Housing)",
-        f"rule fired: {fnd.id}  evidence={fnd.evidence}",
+        f"rule fired: {fnd.rule_id}  evidence={_evidence(report, fnd)}",
         [("MAE (orig scale)", f"{mae_n:.4f}", f"{mae_g:.4f}"),
          ("RMSE", f"{rmse_n:.4f}", f"{rmse_g:.4f}"),
          ("R^2", f"{r2_n:.4f}", f"{r2_g:.4f}"),
@@ -92,7 +94,7 @@ def case1() -> dict:
         "naive", "roadmap-guided")
     print(f"\nMAE relative improvement (naive -> guided): {rel:+.1f}%")
     return {"mae_naive": mae_n, "mae_guided": mae_g, "rel_improvement_pct": rel,
-            "held_naive": held_n, "held_guided": held_g, "evidence": fnd.evidence}
+            "held_naive": held_n, "held_guided": held_g, "evidence": _evidence(report, fnd)}
 
 
 # --------------------------------------------------------------------------- #
@@ -104,8 +106,8 @@ def case2() -> dict:
     dup = rng.choice(len(df), size=int(0.2 * len(df)), replace=False)
     corrupt = pd.concat([df, df.iloc[dup]], ignore_index=True)
 
-    roadmap = ml.analyze(corrupt, target="target", use_llm=False)
-    fnd = _finding(roadmap, "duplicate_rows")
+    report = ml.analyze(corrupt, target="target", task="classification", holdout=None)
+    fnd = _finding(report, "duplicate_rows")
     if fnd is None:
         _stop("case 2: expected 'duplicate_rows' to fire on the corrupted copy.")
 
@@ -122,13 +124,13 @@ def case2() -> dict:
 
     _table(
         "CASE 2 — Duplicate-row leakage (Breast Cancer)",
-        f"rule fired: {fnd.id}  evidence={fnd.evidence}",
+        f"rule fired: {fnd.rule_id}  evidence={_evidence(report, fnd)}",
         [("CV accuracy", f"{acc_naive:.4f}", f"{acc_honest:.4f}"),
          ("rows", str(len(corrupt)), str(len(clean)))],
         "naive (dupes)", "de-duplicated")
     print(f"\nInflation from duplicate leakage: {gap:+.2f} accuracy points")
     return {"acc_naive": acc_naive, "acc_honest": acc_honest,
-            "gap_points": gap, "evidence": fnd.evidence}
+            "gap_points": gap, "evidence": _evidence(report, fnd)}
 
 
 # --------------------------------------------------------------------------- #
@@ -141,12 +143,12 @@ def case3() -> dict:
     leaked = df.copy()
     leaked["leaky"] = leaked["target"] + noise  # |r| ~ 0.9999
 
-    roadmap = ml.analyze(leaked, target="target", use_llm=False)
-    fnd = _finding(roadmap, "target_leakage")
+    report = ml.analyze(leaked, target="target", task="regression", holdout=None)
+    fnd = _finding(report, "leakage_hint")
     if fnd is None:
-        _stop("case 3: expected 'target_leakage' to fire on the injected feature.")
+        _stop("case 3: expected 'leakage_hint' to fire on the injected feature.")
     if fnd.severity.value != "critical":
-        _stop(f"case 3: 'target_leakage' fired but severity={fnd.severity.value}, expected critical.")
+        _stop(f"case 3: 'leakage_hint' fired but severity={fnd.severity.value}, expected critical.")
 
     cv = KFold(n_splits=5, shuffle=True, random_state=0)
     r2_leak = cross_val_score(LinearRegression(), leaked.drop(columns="target"),
@@ -155,10 +157,10 @@ def case3() -> dict:
                                 df["target"], cv=cv, scoring="r2").mean()
     gap = (r2_leak - r2_honest) * 100
 
-    corr = fnd.evidence["leakage_hints"][0]["correlation"]
+    corr = report.evidence["ev.col.leaky.pearson"].value
     _table(
         "CASE 3 — Target leakage (Diabetes + injected feature)",
-        f"rule fired: {fnd.id} [{fnd.severity.value}]  |r|={abs(corr):.4f}",
+        f"rule fired: {fnd.rule_id} [{fnd.severity.value}]  |r|={abs(corr):.4f}",
         [("CV R^2", f"{r2_leak:.4f}", f"{r2_honest:.4f}")],
         "with leak", "leak removed")
     print(f"\nApparent R^2 inflation from leakage: {gap:+.1f} points")
