@@ -24,8 +24,8 @@ build/
 # OS
 .DS_Store
 
-# CLI default output when run inside the repo
-metriclens_report.html
+# reports generated in the repo root (examples/output/ is tracked on purpose)
+/*.html
 
 # private v0 design notes (kept locally, not published)
 ARCHITECTURE.v0.md
