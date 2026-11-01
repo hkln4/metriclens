@@ -6,10 +6,10 @@ import pytest
 from fixtures import CASES
 from pydantic import ValidationError
 
-import metriclens as ml
-from metriclens.enums import DecisionClass, DecisionStatus, Severity, Trigger
-from metriclens.report.model import Finding
-from metriclens.rules.registry import trigger
+import prefit as pf
+from prefit.enums import DecisionClass, DecisionStatus, Severity, Trigger
+from prefit.report.model import Finding
+from prefit.rules.registry import trigger
 
 
 def _findings_by_rule(rep):
@@ -21,7 +21,7 @@ def _findings_by_rule(rep):
 
 @pytest.mark.parametrize("case", CASES, ids=[c.name for c in CASES])
 def test_benchmark_case(case):
-    rep = ml.analyze(case.make(), case.target, task=case.task, **case.kwargs)
+    rep = pf.analyze(case.make(), case.target, task=case.task, **case.kwargs)
     got = _findings_by_rule(rep)
     for rid in case.must_fire:
         assert "fired" in got.get(rid, set()), f"{rid} should fire"
@@ -46,7 +46,7 @@ def test_finding_requires_evidence():
 
 
 def test_every_finding_and_decision_cites_existing_evidence(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     for f in rep.details.findings:
         assert set(f.evidence_ids) <= set(rep.details.evidence)
     for d in rep.decisions:
@@ -55,7 +55,7 @@ def test_every_finding_and_decision_cites_existing_evidence(messy_df):
 
 
 def test_procedural_decisions_never_modify_data_content(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     allowed = {"d.cv", "d.holdout", "d.fit_in_fold", "d.drop_constant"}
     for d in rep.decisions:
         if d.cls is DecisionClass.PROCEDURAL:
@@ -66,24 +66,24 @@ def test_no_group_split_without_user_groups():
     from fixtures import duplicates, id_column
 
     for df in (duplicates(), id_column()):
-        rep = ml.analyze(df, "y")
+        rep = pf.analyze(df, "y")
         assert "Group" not in rep.decision("d.cv").step.params["name"]
 
 
 def test_group_split_with_user_groups(reg_df):
-    rep = ml.analyze(reg_df.assign(g=np.arange(len(reg_df)) // 5), "y", groups="g")
+    rep = pf.analyze(reg_df.assign(g=np.arange(len(reg_df)) // 5), "y", groups="g")
     assert rep.decision("d.cv").step.params["name"] == "GroupKFold"
     assert "g" not in rep.details.profile.columns
 
 
 def test_time_col_switches_to_time_series_split(reg_df):
-    rep = ml.analyze(reg_df.assign(t=pd.date_range("2020", periods=len(reg_df), freq="h")), "y", time_col="t")
+    rep = pf.analyze(reg_df.assign(t=pd.date_range("2020", periods=len(reg_df), freq="h")), "y", time_col="t")
     assert rep.decision("d.cv").step.params["name"] == "TimeSeriesSplit"
     assert not any(d.id == "d.temporal" for d in rep.decisions)
 
 
 def test_leakage_is_only_a_hint(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     f = rep.details.finding("f.leakage_hint.leak")
     assert "hint" in f.message.lower() and "manual review" in f.message.lower()
     assert "detected" not in f.message.lower()
@@ -94,7 +94,7 @@ def test_leakage_is_only_a_hint(messy_df):
 def test_id_like_is_a_review_question_not_a_verdict():
     from fixtures import id_column
 
-    rep = ml.analyze(id_column(), "y")
+    rep = pf.analyze(id_column(), "y")
     f = rep.details.finding("f.id_like.customer_id")
     assert "not a leakage verdict" in f.message
     assert rep.decision("d.drop_id.customer_id").status is DecisionStatus.AWAITING_USER
@@ -103,14 +103,14 @@ def test_id_like_is_a_review_question_not_a_verdict():
 def test_duplicates_are_review_items():
     from fixtures import duplicates
 
-    rep = ml.analyze(duplicates(), "y")
+    rep = pf.analyze(duplicates(), "y")
     assert rep.decision("d.duplicate_rows").cls is DecisionClass.REVIEW
 
 
 def test_class_weight_not_applicable_for_estimator_without_it(imb_df):
     from sklearn.neighbors import KNeighborsClassifier
 
-    rep = ml.analyze(imb_df, "y", estimator=KNeighborsClassifier())
+    rep = pf.analyze(imb_df, "y", estimator=KNeighborsClassifier())
     assert rep.decision("d.class_weight").status is DecisionStatus.NOT_APPLICABLE
 
 
@@ -118,26 +118,26 @@ def test_negative_target_gets_no_log_transform():
     rng = np.random.default_rng(1)
     df = pd.DataFrame({"a": rng.normal(size=3000)})
     df["y"] = rng.standard_t(2, 3000) * 10
-    rep = ml.analyze(df, "y", task="regression")
+    rep = pf.analyze(df, "y", task="regression")
     d = rep.decision("d.log_target")
     assert d.cls is DecisionClass.REVIEW and d.step is None
 
 
 def test_findings_are_ordered_critical_first(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     order = {Severity.CRITICAL: 0, Severity.WARN: 1, Severity.INFO: 2}
     sev = [order[f.severity] for f in rep.details.findings]
     assert sev == sorted(sev)
 
 
 def test_deterministic(messy_df):
-    a = ml.analyze(messy_df, "y").to_json()
-    b = ml.analyze(messy_df, "y").to_json()
+    a = pf.analyze(messy_df, "y").to_json()
+    b = pf.analyze(messy_df, "y").to_json()
     assert a == b
 
 
 def test_datetime_and_text_are_review_items_not_dropped_as_uninformative(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     d = rep.decision("d.unsupported_columns")
     assert d.cls is DecisionClass.REVIEW and d.step is None
     assert "not a judgement that these columns are uninformative" in d.rationale
@@ -149,19 +149,19 @@ def test_datetime_and_text_are_review_items_not_dropped_as_uninformative(messy_d
 def test_groups_and_time_col_together_are_rejected(reg_df):
     df = reg_df.assign(g=np.arange(len(reg_df)) // 5, t=pd.date_range("2020", periods=len(reg_df), freq="h"))
     with pytest.raises(ValueError, match="not supported in v1"):
-        ml.analyze(df, "y", groups="g", time_col="t")
+        pf.analyze(df, "y", groups="g", time_col="t")
 
 
 def test_time_split_states_that_stratification_is_off(imb_df):
     df = imb_df.assign(t=pd.date_range("2020", periods=len(imb_df), freq="h"))
-    rep = ml.analyze(df, "y", time_col="t")
+    rep = pf.analyze(df, "y", time_col="t")
     assert "stratification is not applied" in rep.decision("d.cv").rationale
 
 
 def test_leakage_hint_is_named_single_feature():
     from fixtures import leaky_numeric_regression
 
-    rep = ml.analyze(leaky_numeric_regression(), "y", task="regression")
+    rep = pf.analyze(leaky_numeric_regression(), "y", task="regression")
     f = rep.details.finding("f.leakage_hint.leak")
     assert f.message.startswith("Single-feature predictive leakage hint")
     assert "not proof of leakage" in f.message

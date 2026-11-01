@@ -1,22 +1,31 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "metriclens"
+name = "prefit"
 version = "0.1.0"
 description = "Decision-driven EDA for tabular supervised learning: evidence-backed, verifiable pre-training decisions."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "hkln4" }]
-keywords = ["machine-learning", "eda", "evaluation", "scikit-learn", "data-profiling", "leakage"]
+keywords = ["machine-learning", "eda", "evaluation", "scikit-learn", "data-profiling", "leakage",
+            "cross-validation", "model-evaluation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 
 # The deterministic core (profile, rules, report, HTML) needs only these.
@@ -34,9 +43,9 @@ verify = ["scikit-learn>=1.4", "scipy>=1.9"]
 report = ["plotly>=5"]
 llm = ["anthropic>=0.40"]
 gemini = ["google-genai>=1.0"]
-all = ["metriclens[verify,report,llm]"]
+all = ["prefit[verify,report,llm]"]
 dev = [
-    "metriclens[verify,report]",
+    "prefit[verify,report]",
     "pytest>=7",
     "pytest-cov>=4",
     "ruff>=0.5",
@@ -45,16 +54,20 @@ dev = [
 ]
 
 [project.scripts]
-metriclens = "metriclens.cli:main"
+prefit = "prefit.cli:main"
 
 [project.urls]
-Changelog = "https://github.com/hkln4/metriclens/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/hkln4/prefit"
+Repository = "https://github.com/hkln4/prefit"
+Issues = "https://github.com/hkln4/prefit/issues"
+Changelog = "https://github.com/hkln4/prefit/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["metriclens"]
+packages = ["prefit"]
 
 [tool.hatch.build.targets.sdist]
-include = ["metriclens", "tests", "benchmarks", "README.md", "CHANGELOG.md", "LICENSE", "ARCHITECTURE.md"]
+include = ["prefit", "tests", "benchmarks/*.py", "README.md", "CHANGELOG.md", "LICENSE", "ARCHITECTURE.md",
+           "CONTRIBUTING.md"]
 
 [tool.ruff]
 line-length = 120
@@ -82,8 +95,8 @@ testpaths = ["tests"]
 markers = ["slow: experiments with real models (deselect with -m 'not slow')"]
 
 [tool.coverage.run]
-source = ["metriclens"]
-omit = ["metriclens/llm/anthropic.py", "metriclens/llm/gemini.py"]
+source = ["prefit"]
+omit = ["prefit/llm/anthropic.py", "prefit/llm/gemini.py"]
 
 [tool.coverage.report]
 fail_under = 85

@@ -4,7 +4,7 @@ Two jobs, both before any statistic is computed:
 
 1. Fail loudly on inputs that would otherwise produce a silently empty report
    (a misspelled target, an unknown keyword, a groups array of the wrong length).
-2. Split off a holdout that *no* metriclens decision ever sees. The profile, the
+2. Split off a holdout that *no* prefit decision ever sees. The profile, the
    rules and the experiments all run on the development part only, so the
    holdout stays an honest final check — the EDA itself cannot leak into it.
 """
@@ -31,7 +31,7 @@ def validate_inputs(
 ) -> pd.Series | None:
     """Raise on bad input; return the groups as a Series aligned to `df` (or None)."""
     if not isinstance(df, pd.DataFrame):
-        raise TypeError(f"metriclens expects a pandas DataFrame, got {type(df).__name__}.")
+        raise TypeError(f"prefit expects a pandas DataFrame, got {type(df).__name__}.")
     if df.empty:
         raise ValueError("The DataFrame is empty.")
     if df.columns.duplicated().any():

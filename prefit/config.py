@@ -1,4 +1,4 @@
-"""User-tunable limits. Defaults are deliberately conservative: metriclens must
+"""User-tunable limits. Defaults are deliberately conservative: prefit must
 stay a fast pre-training step, never turn into an AutoML search."""
 
 from __future__ import annotations

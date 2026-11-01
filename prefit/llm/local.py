@@ -16,7 +16,7 @@ _DEFAULT_URL = "http://localhost:11434/v1"   # Ollama
 class LocalProvider(Provider):
     def __init__(self, base_url: str | None = None, model: str = "llama3.1", api_key: str | None = None,
                  max_tokens: int = 1500, timeout: float = 120.0) -> None:
-        self.base_url = (base_url or os.environ.get("METRICLENS_LLM_URL") or _DEFAULT_URL).rstrip("/")
+        self.base_url = (base_url or os.environ.get("PREFIT_LLM_URL") or _DEFAULT_URL).rstrip("/")
         if not self.base_url.startswith(("http://", "https://")):
             raise ValueError("base_url must be an http(s) URL.")
         self.model = model

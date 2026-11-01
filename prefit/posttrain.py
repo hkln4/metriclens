@@ -114,7 +114,7 @@ class ReviewReport(BaseModel):
         from .render.html import shell
 
         body, figs = self.html_section()
-        out = shell("metriclens review", f"<header><h1>metriclens review</h1></header>{body}", figs, plotlyjs,
+        out = shell("prefit review", f"<header><h1>prefit review</h1></header>{body}", figs, plotlyjs,
                     [("review", "Review")])
         if path:
             with open(path, "w", encoding="utf-8") as fh:

@@ -26,7 +26,7 @@ from .common import (
 def render_text(report: Any, md: bool) -> str:
     H = (lambda t: f"## {t}") if md else (lambda t: t.upper())
     B = (lambda t: f"**{t}**") if md else (lambda t: t)
-    lines = ["# metriclens report" if md else "METRICLENS REPORT", "", headline(report), "",
+    lines = ["# prefit report" if md else "PREFIT REPORT", "", headline(report), "",
              "Data partition: " + partition_note(report), "", B("Next step: ") + next_step(report), ""]
 
     att = attention(report)

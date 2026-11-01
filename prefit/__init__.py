@@ -1,4 +1,4 @@
-"""metriclens — decision-driven EDA for tabular supervised learning.
+"""prefit — decision-driven EDA for tabular supervised learning.
 
 Profiles a dataset before training, turns the measurements into classified,
 evidence-backed decisions (procedural / conditional / contextual / review),

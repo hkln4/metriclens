@@ -15,7 +15,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: ruff check .
-      - run: mypy metriclens
+      - run: mypy prefit
 
   test:
     runs-on: ubuntu-latest
@@ -29,14 +29,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: pytest -q --cov=metriclens --cov-report=term
+      - run: pytest -q --cov=prefit --cov-report=term
       - name: HTML smoke test (CLI end to end)
         run: |
           python - <<'PY'
           from sklearn.datasets import load_breast_cancer
           load_breast_cancer(as_frame=True).frame.to_csv("bc.csv", index=False)
           PY
-          metriclens report bc.csv --target target --verify --max-experiments 2 --out smoke.html --json smoke.json
+          prefit report bc.csv --target target --verify --max-experiments 2 --out smoke.html --json smoke.json
           python -c "import json,re; h=open('smoke.html').read(); json.load(open('smoke.json')); ids=set(re.findall(r'id=\"([^\"]+)\"',h)); bad=set(re.findall(r'href=\"#([^\"]+)\"',h))-ids; assert not bad, bad; print('ok', len(h))"
 
   core-only:
@@ -50,10 +50,10 @@ jobs:
       - run: pip install -e . pytest
       - run: |
           python - <<'PY'
-          import numpy as np, pandas as pd, metriclens as ml
+          import numpy as np, pandas as pd, prefit as pf
           rng = np.random.default_rng(0)
           df = pd.DataFrame({"a": rng.normal(size=2000), "y": (rng.random(2000) < .1).astype(int)})
-          r = ml.analyze(df, "y")
+          r = pf.analyze(df, "y")
           assert r.decisions and "<!doctype html>" in r.to_html()
           print(r)
           PY

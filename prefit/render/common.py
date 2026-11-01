@@ -146,9 +146,9 @@ def partition_note(report: Any) -> str:
         ov = ext.get("overlap_rows")
         ov_txt = "" if ov is None else (f" Exact row overlap with the development data: {ov} row(s)." if ov
                                         else " No exact row overlap with the development data.")
-        return (f"{base} Metriclens did not reserve an internal holdout; an {ext['name']} of {ext['n_rows']:,} rows "
+        return (f"{base} Prefit did not reserve an internal holdout; an {ext['name']} of {ext['n_rows']:,} rows "
                 f"was registered (metadata only, never profiled).{ov_txt}")
-    return (f"{base} Metriclens did not reserve an internal holdout. If you split off a test set before analyze, "
+    return (f"{base} Prefit did not reserve an internal holdout. If you split off a test set before analyze, "
             "register it with report.register_external_holdout(test_df); otherwise estimate final performance "
             "with nested cross-validation.")
 

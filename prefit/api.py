@@ -1,10 +1,10 @@
 """Public entry points and orchestration.
 
-    ml.split(df, ...)            -> (dev_df, test_df)      data preparation, explicit
-    ml.analyze(dev_df, ...)      -> Report                 profile -> rules -> figures
+    pf.split(df, ...)            -> (dev_df, test_df)      data preparation, explicit
+    pf.analyze(dev_df, ...)      -> Report                 profile -> rules -> figures
     report.answer / verify / interpret / register_external_holdout -> new Report revision
     report.export(...)           -> model recipe
-    ml.review(...)               -> post-training check
+    pf.review(...)               -> post-training check
 
 `analyze` never splits unless asked (`holdout=0.2`); then the holdout is set
 aside before anything is computed and can be re-derived with `report.holdout(df)`.
@@ -56,7 +56,7 @@ def split(
         "random"      plain random rows
         "group"       whole groups (needs `groups=` column) on one side
         "time"        the latest `test_size` share by `time_col` becomes the test set
-    Pass dev_df to `ml.analyze` and keep test_df untouched until the end;
+    Pass dev_df to `pf.analyze` and keep test_df untouched until the end;
     `report.register_external_holdout(test_df, dev_df=dev_df)` records it.
     """
     if strategy not in SPLIT_STRATEGIES:
@@ -104,7 +104,7 @@ def analyze(
 
     Parameters
     ----------
-    df : the development data (typically dev_df from `ml.split`).
+    df : the development data (typically dev_df from `pf.split`).
     target : name of the target column.
     task : "classification" / "regression"; inferred (and flagged for
         confirmation) when omitted.
@@ -115,7 +115,7 @@ def analyze(
         one side of every split. Group-aware splitting is only used when given.
     time_col : column defining time order; switches to TimeSeriesSplit.
     holdout : None (default) analyzes all of `df`. A fraction (e.g. 0.2) asks
-        metriclens to set that share aside *before* profiling; get it back with
+        prefit to set that share aside *before* profiling; get it back with
         `report.holdout(df)`.
     split_columns_as_features : by default the groups / time_col columns are
         kept out of the model features; True includes them (with a warning).
@@ -123,8 +123,8 @@ def analyze(
     answers : answers to report questions, e.g. {"metric_priority": "miss_costly"}.
     verify : run the bounded experiments for conditional decisions (needs the
         `verify` extra: scikit-learn + scipy).
-    budget : experiment limits (see `metriclens.Budget`).
-    llm : optional `metriclens.LLMConfig` (or a provider name / Provider). Off by
+    budget : experiment limits (see `prefit.Budget`).
+    llm : optional `prefit.LLMConfig` (or a provider name / Provider). Off by
         default; see `Report.llm_payload()` for exactly what would be sent.
     """
     options = profile_options or ProfileOptions()
@@ -167,7 +167,7 @@ def analyze(
 
     tr = load_track_record()
     manifest = Manifest(
-        metriclens_version=__version__, python=platform.python_version(), packages=_packages(), seed=seed,
+        prefit_version=__version__, python=platform.python_version(), packages=_packages(), seed=seed,
         rule_versions=rule_versions(), profile_options=options.model_dump(), budget=budget.model_dump(),
         benchmark=tr.get("manifest_version"), source_fingerprint=fingerprint(df, target),
         history=[{"revision": 0, "action": "analyze", "target": target, "task": task_t.value,
@@ -199,7 +199,7 @@ def load_report(source: str) -> Report:
 
 def review(y_true: Any, y_pred: Any, report: Report | None = None, *, y_score: Any = None,
            segments: Any = None, task: Task | str | None = None) -> Any:
-    """Post-training review against the roadmap's assumptions (see `metriclens.posttrain`)."""
+    """Post-training review against the roadmap's assumptions (see `prefit.posttrain`)."""
     from .posttrain import review as _review
 
     return _review(y_true, y_pred, report=report, y_score=y_score, segments=segments, task=task)
@@ -343,7 +343,7 @@ def _apply_answers(report: Report, answers: dict[str, str]) -> Report:
     answers = _normalize_answers(answers)
     q_task = answers.get("q.task")
     if q_task is not None and q_task != report.task.value:
-        raise ValueError(f"You answered that the task is {q_task}: re-run ml.analyze(df, target, task='{q_task}').")
+        raise ValueError(f"You answered that the task is {q_task}: re-run pf.analyze(df, target, task='{q_task}').")
     ctx = report.details.context
     ctx_state = evolve(ctx, answers={**ctx.answers, **answers})
     manifest = _next_revision(report.details.manifest, "answer", answers=answers)
@@ -360,7 +360,7 @@ def _holdout_positions(report: Report, df: pd.DataFrame) -> np.ndarray:
     ctx = report.details.context
     if ctx.groups == "<array>":
         raise ValueError("This report was built with a groups array; holdout positions cannot be re-derived "
-                         "after loading. Re-run ml.analyze.")
+                         "after loading. Re-run pf.analyze.")
     g = df[ctx.groups] if ctx.groups else None
     _, hold, _ = reserve_holdout(df, report.target, report.task, h["fraction"], g, ctx.time_col,
                                  report.details.manifest.seed)
@@ -372,7 +372,7 @@ def _holdout(report: Report, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     check_fingerprint(df, m.source_fingerprint, report.target, "report.holdout", report._row_hashes)
     if not report.details.profile.holdout.get("used"):
         raise ValueError("This report has no internal holdout (analyze ran with holdout=None). If you split with "
-                         "ml.split, your test frame is already separate; record it with "
+                         "pf.split, your test frame is already separate; record it with "
                          "report.register_external_holdout(test_df).")
     hold = _holdout_positions(report, df)
     mask = np.zeros(len(df), dtype=bool)

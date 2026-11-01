@@ -20,7 +20,7 @@ from .enums import ColumnKind, DecisionClass, Task
 from .profiling.profile import DataProfile
 from .report.model import Step
 
-_INSTALL = "This needs scikit-learn: pip install 'metriclens[verify]'"
+_INSTALL = "This needs scikit-learn: pip install 'prefit[verify]'"
 
 
 def _sk():

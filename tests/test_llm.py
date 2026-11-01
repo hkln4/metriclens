@@ -3,8 +3,8 @@ import warnings
 
 import pytest
 
-import metriclens as ml
-from metriclens import LLMConfig, Provider
+import prefit as pf
+from prefit import LLMConfig, Provider
 
 
 class FakeProvider(Provider):
@@ -36,12 +36,12 @@ def _good(rep):
 
 
 def test_report_is_complete_without_llm(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     assert rep.details.llm is None and rep.decisions and rep.metric_plan.primary
 
 
 def test_llm_claims_must_cite_known_ids(messy_df):
-    rep = ml.analyze(messy_df, "y", context="churn screening")
+    rep = pf.analyze(messy_df, "y", context="churn screening")
     fake = FakeProvider(_good(rep))
     out = rep.interpret(LLMConfig(provider=fake))
     assert out.details.llm is not None
@@ -56,7 +56,7 @@ def test_llm_claims_must_cite_known_ids(messy_df):
 
 
 def test_payload_never_contains_raw_rows_and_can_hide_names(messy_df):
-    rep = ml.analyze(messy_df, "y", context="private context")
+    rep = pf.analyze(messy_df, "y", context="private context")
     shared = rep.llm_payload()
     assert "free text comment" not in json.dumps(shared, default=str)
     hidden = rep.llm_payload(LLMConfig(share_column_names=False, include_context=False))
@@ -67,7 +67,7 @@ def test_payload_never_contains_raw_rows_and_can_hide_names(messy_df):
 
 
 def test_aliases_are_mapped_back(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     cfg = LLMConfig(share_column_names=False)
     payload = rep.llm_payload(cfg)
     leak_alias = f"col_{list(rep.details.profile.columns).index('leak') + 1}"
@@ -81,7 +81,7 @@ def test_aliases_are_mapped_back(messy_df):
 
 
 def test_malformed_output_is_rejected(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     with pytest.warns(UserWarning, match="rejected"):
         out = rep.interpret(LLMConfig(provider=FakeProvider("not json at all")))
     assert out.details.llm is None
@@ -92,14 +92,14 @@ def test_provider_failure_does_not_break(messy_df):
         def complete(self, s, u):
             raise RuntimeError("network down")
 
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     with pytest.warns(UserWarning, match="failed"):
         assert rep.interpret(Boom()).details.llm is None
 
 
 def test_missing_key_falls_back(messy_df, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
         out = rep.interpret("anthropic")
@@ -107,7 +107,7 @@ def test_missing_key_falls_back(messy_df, monkeypatch):
 
 
 def test_llm_section_rendered_and_marked_optional(messy_df):
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     out = rep.interpret(FakeProvider(_good(rep)))
     h = out.to_html()
     assert "Optional interpretation" in h and "manual review required" in h
@@ -118,9 +118,9 @@ def test_local_provider_against_a_local_server(messy_df):
     import http.server
     import threading
 
-    from metriclens.llm.local import LocalProvider
+    from prefit.llm.local import LocalProvider
 
-    rep = ml.analyze(messy_df, "y")
+    rep = pf.analyze(messy_df, "y")
     answer = json.dumps(_good(rep))
     seen = {}
 
