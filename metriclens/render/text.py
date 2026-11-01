@@ -1,92 +1,94 @@
-"""Plain-text / markdown render. `print(report)` shows the plain-text form."""
+"""Plain-text / markdown render. `print(report)` shows the plain-text form.
+
+Short by design: what needs you, then one line of why / do per decision.
+Evidence tables, rule versions and the profile live in `report.details` and in
+the HTML report's Details section.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from ..rules.metrics import label, natural
-from .common import CLASS_LABEL, fmt, fmt_ci, headline, partition_note, priorities, status_word
+from .common import (
+    CLASS_LABEL,
+    attention,
+    experiment_summary,
+    fmt,
+    headline,
+    key_evidence,
+    next_step,
+    partition_note,
+    status_word,
+)
 
 
 def render_text(report: Any, md: bool) -> str:
     H = (lambda t: f"## {t}") if md else (lambda t: t.upper())
     B = (lambda t: f"**{t}**") if md else (lambda t: t)
-    dmap = {d.id: d for d in report.decisions}
     lines = ["# metriclens report" if md else "METRICLENS REPORT", "", headline(report), "",
-             "Data partition: " + partition_note(report), ""]
+             "Data partition: " + partition_note(report), "", B("Next step: ") + next_step(report), ""]
 
-    pr = priorities(report)
-    if pr:
-        lines += [H("Needs your attention")]
-        lines += [f"- [{status_word(d.status)}] {d.title} ({d.id})" for d in pr]
+    att = attention(report)
+    if att:
+        lines.append(H("Needs your attention"))
+        lines += [f"- [{status_word(d.status)}] {d.title} ({d.id})" for d in att]
+        lines.append("")
+
+    pq = report.pending_questions()
+    if pq:
+        lines.append(H("Questions for you"))
+        for q in pq:
+            opts = " | ".join(f"{o.value}: {o.label}" for o in q.options)
+            lines.append(f"- {q.id[2:]}: {q.text}  [{opts}]")
+            if q.suggestion:
+                lines.append(f"    suggestion awaiting your confirmation (LLM): {q.suggestion} — {q.suggestion_reason}")
+        lines.append('  answer with: report = report.answer({"<question>": "<option>"})')
         lines.append("")
 
     lines.append(H("Roadmap"))
     for st in report.roadmap:
-        lines.append(B(f"{st.title}") + f" — {st.summary}")
+        lines.append(B(st.title) + f" — {st.summary}")
         for did in st.decision_ids:
-            d = dmap[did]
+            d = report.decision(did)
             lines.append(f"- [{CLASS_LABEL[d.cls]} · {status_word(d.status)}] {d.title}")
-            lines.append(f"    do:  {d.action}")
-            lines.append(f"    why: {d.rationale}")
+            ke = key_evidence(report, d)
+            lines.append(f"    why: {d.why_short}" + (f" ({ke})" if ke else ""))
+            lines.append(f"    do:  {d.do_short}")
+            ex = experiment_summary(report, d)
+            if ex:
+                lines.append(f"    experiment: {ex}")
             if d.note:
                 lines.append(f"    note: {d.note}")
-        lines.append("")
-
-    if report.pending_questions:
-        lines.append(H("Questions for you"))
-        for q in report.pending_questions:
-            opts = " | ".join(f"{o.value}: {o.label}" for o in q.options)
-            lines.append(f"- {q.id[2:]}: {q.text}  [{opts}]")
-            if q.suggestion:
-                lines.append(f"    LLM suggestion (not applied): {q.suggestion} — {q.suggestion_reason}")
-        lines.append('  answer with: report = report.answer({"<question>": "<option>"})')
         lines.append("")
 
     mp = report.metric_plan
     lines.append(H("Metrics"))
     lines.append(f"- optimize/report: {', '.join(label(m) for m in mp.primary)}"
-                 + (" (provisional)" if mp.dev_metric_provisional else ""))
+                 + (" (provisional until you answer)" if mp.dev_metric_provisional else ""))
     if mp.report_alongside:
         lines.append(f"- alongside: {', '.join(label(m) for m in mp.report_alongside)}")
     for m, why in mp.avoid.items():
         lines.append(f"- avoid {m}: {why}")
-    lines += [f"- note: {n}" for n in mp.notes]
+    b = report.baseline
+    if b.get("families") and b.get("dummy", {}).get("mean") is not None:
+        mt = b["metric"]
+        fams = ", ".join(f"{k} {fmt(natural(mt, v['mean']))}" for k, v in b["families"].items())
+        lines.append(f"- baseline {label(mt)} on {b['cv']}: dummy {fmt(natural(mt, b['dummy']['mean']))}; {fams}")
     lines.append("")
 
-    if report.findings:
-        lines.append(H("Findings"))
-        for f in report.findings:
-            lines.append(f"- [{f.severity.value}{'' if f.trigger.value == 'fired' else ', near threshold'}] "
-                         f"{f.message}  (rule {f.rule_id} v{f.rule_version})")
-            for eid in f.evidence_ids:
-                e = report.evidence[eid]
-                lines.append(f"    {e.label}: {fmt(e.value)} {fmt_ci(e.ci)}  ({e.method})")
-        lines.append("")
-
-    if report.experiments:
-        lines.append(H("Experiments (development evidence)"))
-        for e in report.experiments:
-            lines.append(f"- {e.decision_id} · {e.family} ({e.estimator}) · {label(e.metric)}: "
-                         f"diff {fmt(e.mean_diff)} {fmt_ci(e.ci)}, Holm p={fmt(e.p_adjusted)}, "
-                         f"practical threshold {fmt(e.min_effect)}, {e.folds_improved}/{len(e.fold_diffs)} folds "
-                         f"improved -> {e.outcome} [{e.protocol}]")
-        if report.baseline.get("dummy", {}).get("mean") is not None:
-            b = report.baseline
-            mt = b["metric"]
-            fams = ", ".join(f"{k} {fmt(natural(mt, v['mean']))}" for k, v in b["families"].items())
-            lines.append(f"- baseline {label(mt)}: dummy {fmt(natural(mt, b['dummy']['mean']))}; {fams}")
-        lines.append("")
-
-    if report.llm:
-        lines.append(H(f"Optional interpretation · LLM ({report.llm.provider})"))
-        lines.append(report.llm.summary)
-        for c in report.llm.priorities:
+    llm = report.details.llm
+    if llm:
+        lines.append(H(f"Optional interpretation · LLM ({llm.provider})"))
+        lines.append(llm.summary)
+        for c in llm.priorities:
             lines.append(f"- {c.text} [{', '.join(c.evidence_ids + c.decision_ids)}]")
-        for s in report.llm.semantic_flags:
+        for s in llm.semantic_flags:
             lines.append(f"- manual review required · {s.column}: {s.concern} — {s.reason}")
         lines.append("")
 
     lines.append(H("Limitations"))
-    lines += [f"- {x}" for x in report.limitations]
+    lines += [f"- {x}" for x in report.details.limitations]
+    lines += ["", "Details (findings, evidence, profile, manifest): report.details · decisions as a table: "
+                  "report.decisions_table()"]
     return "\n".join(lines).rstrip() + "\n"

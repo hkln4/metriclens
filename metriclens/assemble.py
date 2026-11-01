@@ -10,13 +10,13 @@ from .enums import DecisionStatus
 from .report.model import Decision, RoadmapStage
 
 STAGES = [
-    ("split", "1. Set up validation"),
-    ("data_review", "2. Review the data"),
-    ("columns", "3. Choose the columns"),
-    ("preprocessing", "4. Preprocess inside the folds"),
-    ("target", "5. Target and class handling"),
-    ("metrics", "6. Pick the metric"),
-    ("final", "7. Baseline and final evaluation"),
+    ("split", "Set up validation"),
+    ("data_review", "Review the data"),
+    ("columns", "Choose the columns"),
+    ("preprocessing", "Preprocess inside the folds"),
+    ("target", "Target and class handling"),
+    ("metrics", "Pick the metric"),
+    ("final", "Final evaluation"),
 ]
 
 _STATUS_WORDS = {
@@ -41,7 +41,8 @@ def status_word(s: DecisionStatus) -> str:
 
 
 def build_roadmap(decisions: list[Decision]) -> list[RoadmapStage]:
-    out = []
+    """Stages that have decisions, numbered consecutively (empty stages are skipped)."""
+    out: list[RoadmapStage] = []
     for stage, title in STAGES:
         ds = [d for d in decisions if d.stage == stage]
         if not ds:
@@ -50,7 +51,7 @@ def build_roadmap(decisions: list[Decision]) -> list[RoadmapStage]:
         for d in ds:
             w = status_word(d.status)
             counts[w] = counts.get(w, 0) + 1
-        out.append(RoadmapStage(stage=stage, title=title, decision_ids=[d.id for d in ds],
+        out.append(RoadmapStage(stage=stage, title=f"{len(out) + 1}. {title}", decision_ids=[d.id for d in ds],
                                 summary=" · ".join(f"{n} {w}" for w, n in counts.items())))
     return out
 

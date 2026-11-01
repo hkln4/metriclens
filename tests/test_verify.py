@@ -33,8 +33,8 @@ def test_proxy_results_are_sensitivity_only():
     assert d.status is not DecisionStatus.VERIFIED          # proxies never verify
     assert not any(x["id"] == "d.log_target" for x in rep.export().included)
     assert rep.baseline["families"] and "dummy" in rep.baseline
-    assert any("sensitivity" in x for x in rep.limitations)
-    assert any(f.id == "fig.exp.log_target" for f in rep.figures)
+    assert any("sensitivity" in x for x in rep.details.limitations)
+    assert any(f.id == "fig.exp.log_target" for f in rep.details.figures)
 
 
 def test_user_estimator_can_verify():
@@ -69,7 +69,7 @@ def test_metric_change_flags_stale_experiments(imb_df):
 
 def test_verify_never_touches_holdout(reg_df):
     rep = ml.analyze(reg_df, "y", verify=True, budget=ml.Budget(max_experiments=0))
-    assert rep.baseline["n_rows"] == rep.profile.dataset.n_rows
+    assert rep.baseline["n_rows"] == rep.details.profile.dataset.n_rows
 
 
 def test_outcome_needs_direction_significance_and_practical_size():

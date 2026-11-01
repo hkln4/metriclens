@@ -26,6 +26,9 @@ class RuleContext:
     has_estimator: bool = False
     estimator_params: set[str] = field(default_factory=set)
     n_splits: int = 5
+    n_repeats: int = 2
+    split_columns_as_features: bool = False
+    external_holdout: dict | None = None
 
 
 @dataclass
@@ -106,7 +109,7 @@ class Emitter:
                  rationale: str, *, status: DecisionStatus | None = None, risk: str = "",
                  verify_hint: str = "", finding_ids: list[str] | tuple[str, ...] = (), evidence_ids: list[str] | tuple[str, ...] = (),
                  step: Step | None = None, question_id: str | None = None,
-                 trig: Trigger | None = None, note: str = "") -> Decision:
+                 trig: Trigger | None = None, note: str = "", why: str = "", do: str = "") -> Decision:
         assert self.rule is not None
         if status is None:
             status = {
@@ -118,6 +121,7 @@ class Emitter:
             }[cls]
         d = Decision(id=f"d.{id}", title=title, cls=cls, status=status, stage=stage,
                      action=action, rationale=rationale, risk=risk, verify_hint=verify_hint,
+                     why_short=why or first_sentence(rationale), do_short=do or first_sentence(action),
                      rule_id=self.rule.id, finding_ids=list(finding_ids),
                      evidence_ids=list(evidence_ids), step=step, question_id=question_id,
                      trigger=trig, note=note)
@@ -125,10 +129,10 @@ class Emitter:
         return d
 
     def question(self, id: str, text: str, options: list[tuple[str, str, str]],
-                 decision_ids: list[str] | tuple[str, ...] = ()) -> Question:
+                 decision_ids: list[str] | tuple[str, ...] = (), answer: str | None = None) -> Question:
         q = Question(id=f"q.{id}", text=text,
                      options=[Option(value=v, label=lbl, effect=eff) for v, lbl, eff in options],
-                     decision_ids=list(decision_ids))
+                     decision_ids=list(decision_ids), answer=answer)
         self.questions.append(q)
         return q
 
@@ -149,6 +153,13 @@ def contextual(out: Emitter, ctx: RuleContext, *, qid: str, question: str,
         status = DecisionStatus.DECLINED
     d = out.decision(decision_id, title, DecisionClass.CONTEXTUAL, stage, action, rationale,
                      status=status, question_id=full_qid, **kw)
-    q = out.question(qid, question, options, decision_ids=[d.id])
-    q.answer = answer
+    out.question(qid, question, options, decision_ids=[d.id], answer=answer)
     return d
+
+
+def first_sentence(text: str) -> str:
+    """The first sentence of `text` (abbreviations like 'e.g.' are not split)."""
+    import re
+
+    parts = re.split(r"(?<![ .][a-z]\.)(?<=[.!?])\s+(?=[A-Z])", text.strip(), maxsplit=1)
+    return parts[0]

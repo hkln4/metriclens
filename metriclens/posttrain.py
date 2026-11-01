@@ -115,7 +115,7 @@ class ReviewReport(BaseModel):
 
         body, figs = self.html_section()
         out = shell("metriclens review", f"<header><h1>metriclens review</h1></header>{body}", figs, plotlyjs,
-                    {"review"})
+                    [("review", "Review")])
         if path:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(out)
@@ -372,7 +372,7 @@ def review(y_true: Any, y_pred: Any, report: Any = None, *, y_score: Any = None,
         t = report.task.value
     else:
         t = "regression" if (np.issubdtype(yt.dtype, np.floating) and len(np.unique(yt)) > 20) else "classification"
-    fids = {f.id for f in report.findings} if report is not None else set()
+    fids = {f.id for f in report.details.findings} if report is not None else set()
     if t == "regression":
         yt_f, yp_f = yt.astype(float), yp.astype(float)
         keep = ~(np.isnan(yt_f) | np.isnan(yp_f))
@@ -385,7 +385,7 @@ def review(y_true: Any, y_pred: Any, report: Any = None, *, y_score: Any = None,
         if report is not None and report.metric_plan.positive_label is not None:
             from .export import positive_label
 
-            pos = positive_label(report.profile, report.metric_plan.positive_label)
+            pos = positive_label(report.details.profile, report.metric_plan.positive_label)
         rep = _review_classification(yt, yp, fids, y_score, pos, segments)
     else:
         raise ValueError(f"review() supports 'regression' and 'classification'; got {t!r}.")

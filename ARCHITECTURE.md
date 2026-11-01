@@ -8,10 +8,12 @@ ones that cannot, and exports only what is safe, confirmed or verified.
 ## Pipeline
 
 ```
-df, target, [estimator, groups, time_col, context, answers]
+ml.split(df, ...) -> dev_df, test_df            (explicit; same splitter as holdout=)
+dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    │
-   ▼  guard.py ─ validate inputs (misspelled target, bad groups…) and
-   │             reserve the holdout (stratified / by group / by time)
+   ▼  guard.py ─ validate inputs (misspelled target, single-class target, groups+time…);
+   │             optional internal holdout (only with holdout=…), set aside before profiling
+   ▼  fingerprint.py ─ SHA-256 digests of the input frame -> manifest (no data)
    ▼  profiling/ ─ dev rows only, seeded sample above ProfileOptions.max_rows
    │     kinds.py   column kind + reason (numeric, categorical, boolean,
    │                datetime, text, id_like, constant)
@@ -22,12 +24,16 @@ df, target, [estimator, groups, time_col, context, answers]
    │     catalog.py  versioned rules with thresholds; emit Evidence → Finding → Decision (+ Question)
    │     metrics.py  metric policy: one contextual decision driven by the cost of errors
    ▼  figures.py ─ decision-bound plotly specs (aggregates + color tokens)
-   ▼  report/model.py ─ Report (evidence, findings, decisions, questions,
-   │                    metric plan, roadmap, figures, limitations, manifest)
+   ▼  report/model.py ─ Report (decisions, questions, metric plan, roadmap,
+   │                    experiments, baseline) + details (findings, evidence,
+   │                    profile, figures, manifest, context, limitations, llm);
+   │                    deeply immutable (frozen.py)
    │
-   ├─ Report.answer(...)  re-runs the rules with new answers (no data needed)
-   ├─ Report.verify(df)   verify.py: bounded experiments on dev rows
-   ├─ Report.export()     export.py: model recipe + preprocessor + CV + scoring from eligible decisions
+   ├─ Report.answer(...)                  re-runs the rules with new answers (no data needed)
+   ├─ Report.verify(df)                   fingerprint check, then verify.py on dev rows
+   ├─ Report.holdout(df)                  fingerprint check, re-derives the internal holdout
+   ├─ Report.register_external_holdout()  metadata + exact-overlap count, never profiled
+   ├─ Report.export()                     export.py: model recipe + preprocessor + CV + scoring
    ├─ Report.interpret()  llm/: optional, schema-constrained interpretation
    ├─ Report.to_html()    render/: single-file report
    └─ ml.review(...)      posttrain.py: assumptions vs. actual errors
@@ -70,8 +76,11 @@ df, target, [estimator, groups, time_col, context, answers]
    time_col together raise instead of silently dropping one.
 6. **The EDA must not leak into the final estimate.** The holdout is reserved
    before profiling and is never used by rules or experiments.
-7. **Reports are immutable.** answer / verify / interpret return a new report
-   with an incremented manifest revision and a history entry.
+7. **Reports are immutable, data is fingerprinted.** answer / verify /
+   interpret / register_external_holdout return a new report with an
+   incremented manifest revision and a history entry; every model is frozen
+   with tuples and read-only dicts. Steps that need data again check the
+   frame's fingerprint and refuse a different one instead of re-splitting.
 8. **The LLM is above the trust boundary.** It sees an allowlisted payload
    (inspectable with `llm_payload()`), must cite existing ids, and can only
    suggest; `answer()` is the only way an answer is applied.

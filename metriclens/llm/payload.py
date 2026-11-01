@@ -17,7 +17,7 @@ NEVER_SENT = ["raw rows", "category labels", "per-column quantiles", "holdout da
 
 def build_payload(report: Any, cfg: LLMConfig) -> tuple[dict[str, Any], dict[str, str]]:
     """Return (payload, reverse_map). reverse_map maps sent ids/names -> real ones."""
-    p = report.profile
+    p = report.details.profile
     share = cfg.share_column_names
     col_alias = {c: (c if share else f"col_{i + 1}") for i, c in enumerate(p.columns)}
     col_alias[report.target] = report.target if share else "target"
@@ -51,11 +51,11 @@ def build_payload(report: Any, cfg: LLMConfig) -> tuple[dict[str, Any], dict[str
                      "distinct": cp.cardinality} for c, cp in p.columns.items()],
         "evidence": {oid(eid, "E"): ({"label": e.label} if share else {}) | {"value": val(e.value), "ci": e.ci,
                                                                                "columns": [col_alias.get(c, "…") for c in e.columns]}
-                     for eid, e in report.evidence.items()},
+                     for eid, e in report.details.evidence.items()},
         "findings": [{"id": oid(f.id, "F"), "rule": f.rule_id, "severity": f.severity.value,
                       "near_threshold": f.trigger.value == "uncertain",
                       "evidence_ids": [oid(x, "E") for x in f.evidence_ids]}
-                     | ({"message": f.message} if share else {}) for f in report.findings],
+                     | ({"message": f.message} if share else {}) for f in report.details.findings],
         "decisions": [{"id": oid(d.id, "D"), "rule": d.rule_id, "class": d.cls.value, "status": d.status.value}
                       | ({"title": d.title, "action": d.action} if share else {}) for d in report.decisions],
         "questions": [{"id": oid(q.id, "Q"), "options": [o.value for o in q.options]}
@@ -63,8 +63,8 @@ def build_payload(report: Any, cfg: LLMConfig) -> tuple[dict[str, Any], dict[str
     }
     if share:
         payload["task_reason"] = p.target.task_evidence.get("reason")
-    if cfg.include_context and report.context.text:
-        payload["user_context"] = report.context.text
+    if cfg.include_context and report.details.context.text:
+        payload["user_context"] = report.details.context.text
     reverse = {v: k for k, v in ids.items()} | {v: k for k, v in col_alias.items()}
     return payload, reverse
 
