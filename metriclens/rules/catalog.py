@@ -1,218 +1,551 @@
-"""The rule catalog: deterministic findings derived from a DataProfile.
-Every rule is evidence-gated; thresholds are tunable module constants."""
+"""The v1 rule catalog.
+
+Conventions every rule follows:
+- thresholds are triggers, not verdicts: a confidence interval that straddles
+  the threshold yields Trigger.UNCERTAIN, never a confident finding;
+- data-modifying actions are never PROCEDURAL — they are REVIEW items, or
+  CONDITIONAL (testable) / CONTEXTUAL (needs the user) decisions;
+- "leakage" is only ever a *hint* that requires manual review;
+- GroupKFold-style splitting is only used when the user supplies real groups.
+"""
+
 from __future__ import annotations
+
+from ..enums import ColumnKind, DecisionClass, DecisionStatus, Severity, Task, Trigger
 from ..profiling.profile import DataProfile
-from ..rules.finding import Finding, MetricSuggestion, Pitfall
-from ..enums import Modality, Severity, Task
-from .registry import rule
+from ..report.model import Step
+from .registry import Emitter, RuleContext, abs_ci, contextual, rule, trigger
 
-TAB = Modality.TABULAR
-IMBALANCE_WARN, IMBALANCE_CRIT = 3.0, 10.0
-SKEW_INFO, SKEW_WARN, OUTLIER_WARN = 1.0, 2.0, 0.05
-MISSING_WARN, MISSING_CRIT = 0.20, 0.50
-SMALL_DATA_WARN, SMALL_DATA_CRIT = 1000, 200
-ZERO_INFLATION_WARN = 0.30
-KURTOSIS_WARN = 3.0          # Fisher excess kurtosis; 0 == normal
-DUPLICATE_WARN = 0.05        # >= this fraction of duplicate rows -> WARN, else INFO
+CLS, REG = Task.CLASSIFICATION, Task.REGRESSION
+WILSON = "Wilson 95% interval"
+BOOT = "bootstrap 95% percentile interval (seeded)"
 
 
-@rule("class_imbalance", applies_to=[(TAB, Task.CLASSIFICATION)])
-def class_imbalance(p: DataProfile) -> Finding | None:
-    ratio = p.core.imbalance_ratio
-    if ratio is None or ratio < IMBALANCE_WARN:
-        return None
-    minority = (p.modality_stats.get("target") or {}).get("minority_fraction")
-    severity = Severity.CRITICAL if ratio >= IMBALANCE_CRIT else Severity.WARN
-    return Finding(
-        id="class_imbalance", severity=severity,
-        evidence={"imbalance_ratio": round(ratio, 2), "minority_fraction": minority},
-        message=(f"Class imbalance is {ratio:.1f}:1"
-                 + (f" (minority class is {minority:.1%} of data)" if minority else "")
-                 + ". A trivial majority-class predictor would score high on accuracy."),
-        candidate_metrics=MetricSuggestion(
-            primary=["PR-AUC / average precision", "balanced accuracy", "macro F1"],
-            secondary=["recall on the minority class", "MCC"],
-            rationale="Metrics that account for the rare class, not overall hit-rate."),
-        pitfalls=[
-            Pitfall(metric="accuracy", reason="Dominated by the majority class; high even for a useless model."),
-            Pitfall(metric="ROC-AUC", reason="Can look optimistic when positives are rare; prefer PR-AUC.")],
-        validation_notes=["Use stratified splits / stratified k-fold to preserve class ratios."])
+# --------------------------------------------------------------------------- #
+# Setup & split
+# --------------------------------------------------------------------------- #
+
+@rule("task_confirmation", "1", description="Ask the user to confirm an inferred task.")
+def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    if not p.task_inferred:
+        return
+    te = p.target.task_evidence
+    other = REG if p.task is CLS else CLS
+    e = out.ev("task.inference", "Task inference", te.get("reason"),
+               "dtype + distinct-value heuristic on the target", columns=[p.target.name])
+    sev = Severity.WARN if te.get("ambiguous") else Severity.INFO
+    f = out.finding("task_inferred", sev, Trigger.FIRED,
+                    f"Task inferred as {p.task.value} ({te.get('reason')}).", [e], [p.target.name])
+    contextual(out, ctx, qid="task", question=f"Is this a {p.task.value} task?",
+               options=[(p.task.value, f"Yes, {p.task.value}", "keeps the current analysis"),
+                        (other.value, f"No, {other.value}", f"re-run ml.analyze(..., task='{other.value}')")],
+               confirm=p.task.value, decision_id="task", title=f"Treat the task as {p.task.value}",
+               stage="split", action=f"Analyze and evaluate as a {p.task.value} problem.",
+               rationale=f"Inferred from the target: {te.get('reason')}.",
+               risk="A wrong task changes every metric and split recommendation.",
+               finding_ids=[f], evidence_ids=[e])
 
 
-@rule("target_skew", applies_to=[(TAB, Task.REGRESSION)])
-def target_skew(p: DataProfile) -> Finding | None:
-    tg = p.modality_stats.get("target") or {}
-    skew = tg.get("skew"); outliers = tg.get("outlier_fraction", 0.0)
-    if skew is None: return None
-    heavy = outliers >= OUTLIER_WARN
-    if abs(skew) < SKEW_INFO and not heavy: return None
-    severity = Severity.WARN if (abs(skew) >= SKEW_WARN or heavy) else Severity.INFO
-    return Finding(
-        id="target_skew", severity=severity,
-        evidence={"skew": round(skew, 3), "outlier_fraction": round(outliers, 4)},
-        message=(f"Target is skewed (skew={skew:.2f}) with {outliers:.1%} IQR-outliers. "
-                 "Squared-error metrics will be dominated by a few large errors."),
-        candidate_metrics=MetricSuggestion(
-            primary=["MAE", "median absolute error"],
-            secondary=["RMSE (report alongside, not alone)"],
-            rationale="Absolute-error metrics resist tail domination; the MAE-vs-RMSE gap itself is informative."),
-        pitfalls=[
-            Pitfall(metric="RMSE", reason="Heavily weights a few large/outlier errors under a skewed target."),
-            Pitfall(metric="R²", reason="Can look healthy while large-error behavior is poor.")],
-        preprocessing_notes=["Consider a log/Box-Cox transform of the target if a multiplicative error scale is acceptable."])
-
-
-@rule("high_missingness", applies_to=[(TAB, None)])
-def high_missingness(p: DataProfile) -> Finding | None:
-    feats = p.modality_stats.get("features") or {}
-    max_missing = feats.get("max_missing_fraction", 0.0)
-    if max_missing < MISSING_WARN:
-        return None
-    cols = feats.get("columns") or {}
-    affected = {c: round(v.get("missing_fraction", 0.0), 3) for c, v in cols.items()
-                if v.get("missing_fraction", 0.0) >= MISSING_WARN}
-    severity = Severity.CRITICAL if max_missing >= MISSING_CRIT else Severity.WARN
-    if max_missing >= MISSING_CRIT:
-        prep = ["Columns above 50% missing carry little signal — consider dropping them rather than imputing.",
-                "For the rest, impute and add a 'was-missing' indicator column so the model can use missingness itself as signal."]
+@rule("validation_split", "2", thresholds={"small_data_rows": 1000},
+      description="Choose the cross-validation splitter from task, groups and time.")
+def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    n = p.dataset.n_rows
+    ev = [out.ev("dataset.n_rows", "Rows profiled (dev)", n, "row count after holdout/sampling")]
+    k = ctx.n_splits
+    small = n < 1000
+    if ctx.time_col:
+        name, params = "TimeSeriesSplit", {"n_splits": k}
+        why = f"rows are ordered in time by '{ctx.time_col}'; each fold trains on the past and tests on the future"
+        if p.task is CLS:
+            why += ("; class stratification is not applied under time ordering, so check that every class "
+                    "appears in each test window")
+    elif ctx.groups:
+        name = "StratifiedGroupKFold" if p.task is CLS else "GroupKFold"
+        params = {"n_splits": k}
+        if p.task is CLS:
+            params.update(shuffle=True, random_state=0)
+        why = f"user-supplied groups ({ctx.groups}) keep every group on one side of each split"
+        if p.task is CLS:
+            why += "; class ratios are preserved only approximately, since whole groups move together"
+    elif p.task is CLS:
+        min_class = min(p.target.stats.get("class_counts", {"_": k}).values())
+        ev.append(out.ev("target.min_class_count", "Smallest class count", min_class, "class counts on dev rows"))
+        k = max(2, min(k, min_class))
+        name = "RepeatedStratifiedKFold" if small else "StratifiedKFold"
+        params = {"n_splits": k, "random_state": 0}
+        params.update({"n_repeats": 3} if small else {"shuffle": True})
+        why = "stratification keeps class ratios equal across folds"
     else:
-        prep = ["Impute numeric columns by median (robust to skew), categoricals by a dedicated 'missing' category; add a missingness-indicator where it may be informative.",
-                "Avoid mean-imputation on skewed columns — it shifts the distribution."]
-    return Finding(
-        id="high_missingness", severity=severity,
-        evidence={"max_missing_fraction": round(max_missing, 3), "columns": affected},
-        message=(f"{len(affected)} column(s) exceed {MISSING_WARN:.0%} missingness "
-                 f"(worst {max_missing:.0%}). Metrics on complete cases only can misrepresent real performance."),
-        pitfalls=[Pitfall(metric="any metric on complete-case data only",
-                          reason="Dropping rows with missing values changes the evaluated population and usually flatters the score.")],
-        preprocessing_notes=prep,
-        validation_notes=["Fit imputation inside each CV fold only — never on the full dataset — to avoid leakage."])
+        name = "RepeatedKFold" if small else "KFold"
+        params = {"n_splits": k, "random_state": 0}
+        params.update({"n_repeats": 3} if small else {"shuffle": True})
+        why = "standard shuffled k-fold"
+    if small and not ctx.time_col and not ctx.groups:
+        why += f"; repeated because {n} rows give noisy single-split estimates"
+    out.decision("cv", f"Cross-validate with {name}", DecisionClass.PROCEDURAL, "split",
+                 f"Use {name}({', '.join(f'{a}={b}' for a, b in params.items())}).", why.capitalize() + ".",
+                 risk=("Without groups or a time column, rows that belong together (same patient, "
+                       "same customer, later in time) can still leak across folds."
+                       if not (ctx.groups or ctx.time_col) else ""),
+                 evidence_ids=ev, step=Step(kind="cv", params={"name": name, **params}))
 
 
-@rule("target_leakage", applies_to=[(TAB, Task.REGRESSION)])
-def target_leakage(p: DataProfile) -> Finding | None:
-    feats = p.modality_stats.get("features") or {}
-    hints = feats.get("leakage_hints") or []
-    if not hints:
-        return None
-    worst = max(hints, key=lambda h: abs(h["correlation"]))
-    return Finding(
-        id="target_leakage", severity=Severity.CRITICAL,
-        evidence={"leakage_hints": hints},
-        message=(f"Feature '{worst['feature']}' correlates with the target at "
-                 f"|r|={abs(worst['correlation']):.3f} — a likely leak. Any metric computed "
-                 "with it present looks near-perfect and means nothing."),
-        pitfalls=[Pitfall(metric="every metric (MAE, RMSE, R², ...)",
-                          reason="A leaked feature inflates all of them; the score reflects the leak, not real skill.")],
-        preprocessing_notes=["Inspect the flagged feature(s); if they encode the target or are unavailable at prediction time, remove them before evaluating."])
+@rule("holdout_policy", "1", description="Keep the holdout out of every decision.")
+def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    h = p.holdout
+    if h.get("used"):
+        e = out.ev("holdout", "Holdout reserved", f"{h['n_holdout']} rows ({h['method']})",
+                   "reserved before profiling; never seen by rules or experiments")
+        out.decision("holdout", "Evaluate on the holdout once, at the end", DecisionClass.PROCEDURAL,
+                     "final", "Use report.split(df) to get the holdout; score the final model on it once.",
+                     "Every metriclens decision was made on the dev rows only, so the holdout is an "
+                     "unbiased check of the final pipeline.",
+                     risk="Re-using the holdout to choose between models turns it into a second dev set.",
+                     evidence_ids=[e])
+    else:
+        e = out.ev("holdout", "Holdout reserved", "no", h.get("reason", ""))
+        out.decision("holdout", "No holdout: use nested CV for the final estimate", DecisionClass.PROCEDURAL,
+                     "final", "Estimate final performance with nested cross-validation (tuning inside, scoring outside).",
+                     f"No holdout was reserved: {h.get('reason', '')}",
+                     risk="Scores from the same CV used to make decisions are optimistic.", evidence_ids=[e])
 
 
-@rule("small_data", applies_to=[(TAB, None)])
-def small_data(p: DataProfile) -> Finding | None:
-    n = p.core.n_samples
-    if n is None or n >= SMALL_DATA_WARN:
-        return None
-    severity = Severity.CRITICAL if n < SMALL_DATA_CRIT else Severity.WARN
-    return Finding(
-        id="small_data", severity=severity,
-        evidence={"n_samples": n},
-        message=(f"Only {n} samples. A single train/test split gives a noisy, high-variance "
-                 "estimate; small metric differences are not reliable."),
-        pitfalls=[Pitfall(metric="point estimates from one split",
-                          reason="With few samples a single split's score swings widely with the random seed.")],
-        validation_notes=["Use k-fold (or repeated/nested) cross-validation instead of one split.",
-                          "Report confidence intervals / std across folds; don't over-read small score gaps."])
+@rule("small_data", "1", thresholds={"warn_rows": 1000, "critical_rows": 200})
+def small_data(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    n = p.dataset.n_rows
+    if n >= 1000:
+        return
+    e = out.ev("dataset.n_rows", "Rows profiled (dev)", n, "row count after holdout/sampling")
+    sev = Severity.CRITICAL if n < 200 else Severity.WARN
+    f = out.finding("small_data", sev, Trigger.FIRED,
+                    f"Only {n} development rows: fold-to-fold variance will be large.", [e])
+    out.decision("small_data", "Treat small score differences as noise", DecisionClass.REVIEW, "split",
+                 "Report the spread across folds and compare models only when the gap exceeds it.",
+                 f"With {n} rows a single split's score swings with the random seed.",
+                 finding_ids=[f], evidence_ids=[e])
 
 
-@rule("constant_features", applies_to=[(TAB, None)])
-def constant_features(p: DataProfile) -> Finding | None:
-    cols = (p.modality_stats.get("features") or {}).get("constant_columns") or []
+@rule("temporal_order", "1", description="Datetime columns exist but no time_col was given.")
+def temporal_order(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    dts = p.kind_of(ColumnKind.DATETIME)
+    if not dts or ctx.time_col:
+        return
+    e = out.ev("columns.datetime", "Datetime columns", dts, "column-kind inference", columns=dts)
+    f = out.finding("datetime_columns", Severity.WARN, Trigger.FIRED,
+                    f"{len(dts)} datetime column(s) {dts} but no time_col: random CV assumes rows are exchangeable in time.",
+                    [e], dts)
+    contextual(out, ctx, qid="temporal", question=(
+        f"Will the model predict future rows from past ones (time order matters for {dts[0]})?"),
+        options=[("yes", "Yes, predict the future", f"re-run ml.analyze(..., time_col='{dts[0]}') for a time-ordered holdout and TimeSeriesSplit"),
+                 ("no", "No, rows are exchangeable", "keep random cross-validation")],
+        confirm="yes", decision_id="temporal", title="Split by time", stage="split",
+        action=f"Re-run with time_col='{dts[0]}' so the holdout is the latest period and CV uses TimeSeriesSplit.",
+        rationale="Random splits let a model train on the future and test on the past, which flatters every metric.",
+        risk="Random CV on time-ordered data is a common source of over-optimistic scores.",
+        finding_ids=[f], evidence_ids=[e])
+
+
+# --------------------------------------------------------------------------- #
+# Data review
+# --------------------------------------------------------------------------- #
+
+@rule("target_missing", "1", thresholds={"missing_fraction": 0.0})
+def target_missing(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    t = p.target
+    if not t.n_missing:
+        return
+    e = out.ev("target.missing", "Target missing rows", t.n_missing,
+               f"count of missing target values ({t.missing_fraction:.1%})", columns=[t.name])
+    f = out.finding("target_missing", Severity.WARN, Trigger.FIRED,
+                    f"{t.n_missing} rows ({t.missing_fraction:.1%}) have no target and cannot be used for supervised training.",
+                    [e], [t.name])
+    out.decision("target_missing", "Check why the target is missing", DecisionClass.REVIEW, "data_review",
+                 "Rows without a target are excluded from training and evaluation; check whether they differ "
+                 "systematically from labelled rows.",
+                 "If labels are missing for a reason (e.g. outcome not yet observed), the labelled rows are a "
+                 "biased sample and metrics will not transfer.",
+                 risk="Selection bias: performance on labelled rows may not match production.",
+                 finding_ids=[f], evidence_ids=[e])
+
+
+@rule("duplicate_rows", "1", thresholds={"warn_fraction": 0.01})
+def duplicate_rows(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    d = p.dataset
+    if not d.duplicate_rows:
+        return
+    e = out.ev("dataset.duplicates", "Exact duplicate rows", d.duplicate_rows,
+               f"exact full-row duplicates incl. target ({d.duplicate_fraction:.2%})")
+    sev = Severity.WARN if d.duplicate_fraction >= 0.01 else Severity.INFO
+    f = out.finding("duplicate_rows", sev, Trigger.FIRED,
+                    f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}).", [e])
+    hint = ("" if ctx.groups else " If you have an entity id, pass it as groups= so copies stay on one side of each split.")
+    out.decision("duplicate_rows", "Review duplicates before splitting", DecisionClass.REVIEW, "data_review",
+                 "Find out whether duplicates are the same real-world record (collection artefact) or legitimate "
+                 "repeats." + hint,
+                 "Copies on both sides of a split leak the answer and inflate held-out scores.",
+                 risk="Dropping legitimate repeats changes the data distribution; keeping artefacts inflates scores. "
+                      "metriclens does not decide this for you.",
+                 finding_ids=[f], evidence_ids=[e])
+
+
+@rule("conflicting_duplicates", "1", thresholds={"groups": 1})
+def conflicting_duplicates(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    k = p.dataset.conflicting_duplicate_groups
+    if not k:
+        return
+    e = out.ev("dataset.conflicting", "Identical features, different target", k,
+               "groups of rows with identical feature values but more than one target value")
+    f = out.finding("conflicting_duplicates", Severity.WARN, Trigger.FIRED,
+                    f"{k} group(s) of rows share all feature values but disagree on the target.", [e])
+    out.decision("conflicting_duplicates", "Check for label noise or missing features", DecisionClass.REVIEW,
+                 "data_review", "Inspect these groups: they indicate label noise, or that the features miss information.",
+                 "No model can separate rows with identical inputs, so these set a ceiling on achievable scores.",
+                 finding_ids=[f], evidence_ids=[e])
+
+
+@rule("high_missingness", "1", thresholds={"warn_fraction": 0.2, "drop_candidate_fraction": 0.5})
+def high_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    fired, uncertain, drop = [], [], []
+    for c, cp in p.columns.items():
+        if cp.kind is ColumnKind.CONSTANT:
+            continue
+        t = trigger(cp.missing_fraction, cp.missing_ci, 0.2)
+        if t is Trigger.FIRED:
+            fired.append(c)
+        elif t is Trigger.UNCERTAIN:
+            uncertain.append(c)
+        if trigger(cp.missing_fraction, cp.missing_ci, 0.5) is Trigger.FIRED:
+            drop.append(c)
+    cols = fired + uncertain
     if not cols:
-        return None
-    return Finding(
-        id="constant_features", severity=Severity.INFO,
-        evidence={"constant_columns": cols},
-        message=f"{len(cols)} constant column(s) carry no signal: {cols}.",
-        preprocessing_notes=["Drop constant columns; they cannot help any model."])
+        return
+    evs = [out.ev(f"col.{c}.missing", f"Missing fraction · {c}", p.columns[c].missing_fraction, WILSON,
+                  ci=p.columns[c].missing_ci, columns=[c]) for c in cols]
+    trig = Trigger.FIRED if fired else Trigger.UNCERTAIN
+    sev = Severity.WARN
+    msg = f"{len(fired)} column(s) are >= 20% missing"
+    if uncertain:
+        msg += f"; {len(uncertain)} more are near the threshold (interval straddles 20%)"
+    f = out.finding("high_missingness", sev, trig, msg + ".", evs, cols)
+    out.decision("missingness_review", "Check whether missingness is informative", DecisionClass.REVIEW,
+                 "data_review",
+                 "Ask how these values went missing. Missing-not-at-random values carry signal (kept via the "
+                 "missing-indicator columns) and may differ in production.",
+                 "Imputation assumes the missing values resemble the observed ones; that is often false.",
+                 risk="If missingness is caused by the target (e.g. a test only ordered for sick patients), the "
+                      "indicator itself can be a leak.",
+                 finding_ids=[f], evidence_ids=evs)
+    if drop:
+        dev = [e for e, c in zip(evs, cols) if c in drop]
+        out.decision("drop_mostly_missing", f"Drop {len(drop)} mostly-missing column(s)", DecisionClass.CONDITIONAL,
+                     "preprocessing", f"Drop {drop} instead of imputing them.",
+                     "Columns that are mostly imputed add noise; but their missing indicator can be informative, "
+                     "so only an experiment can tell.",
+                     risk="Dropping discards any signal in the missingness pattern.",
+                     verify_hint="Compare CV scores with and without these columns.",
+                     finding_ids=[f], evidence_ids=dev, step=Step(kind="drop_columns", params={"columns": drop}),
+                     trig=Trigger.FIRED)
 
 
-@rule("id_like_features", applies_to=[(TAB, None)])
-def id_like_features(p: DataProfile) -> Finding | None:
-    cols = (p.modality_stats.get("features") or {}).get("near_unique_columns") or []
+@rule("near_constant", "1", thresholds={"dominant_fraction": 0.99})
+def near_constant(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    cols = [c for c, cp in p.columns.items()
+            if cp.kind in (ColumnKind.NUMERIC, ColumnKind.CATEGORICAL, ColumnKind.BOOLEAN)
+            and (cp.stats.get("dominant_fraction") or 0) >= 0.99]
     if not cols:
-        return None
-    return Finding(
-        id="id_like_features", severity=Severity.WARN,
-        evidence={"near_unique_columns": cols},
-        message=(f"{len(cols)} near-unique, identifier-like column(s): {cols}. "
-                 "If fed to a model they invite memorization and leakage."),
-        pitfalls=[Pitfall(metric="any metric with id-like features included",
-                          reason="The model can memorize per-row identifiers, inflating scores without real generalization.")],
-        preprocessing_notes=["Drop or hash identifier-like columns before modeling unless they are genuinely predictive."])
+        return
+    evs = [out.ev(f"col.{c}.dominant", f"Dominant value share · {c}", p.columns[c].stats["dominant_fraction"],
+                  "share of the most frequent value among non-missing rows", columns=[c]) for c in cols]
+    f = out.finding("near_constant", Severity.INFO, Trigger.FIRED,
+                    f"{len(cols)} column(s) have one value in >= 99% of rows.", evs, cols)
+    out.decision("near_constant", "Check near-constant columns", DecisionClass.REVIEW, "data_review",
+                 "Keep them unless they are artefacts: a rare value can be a strong signal, or a leak.",
+                 "With so few non-dominant rows, a model can memorize them.",
+                 finding_ids=[f], evidence_ids=evs)
 
 
-@rule("duplicate_rows", applies_to=[(TAB, None)])
-def duplicate_rows(p: DataProfile) -> Finding | None:
-    feats = p.modality_stats.get("features") or {}
-    frac = feats.get("duplicate_fraction", 0.0)
-    if not frac:
-        return None
-    severity = Severity.WARN if frac >= DUPLICATE_WARN else Severity.INFO
-    return Finding(
-        id="duplicate_rows", severity=severity,
-        evidence={"duplicate_fraction": round(frac, 4), "duplicate_rows": feats.get("duplicate_rows")},
-        message=(f"{frac:.1%} of rows are exact duplicates. If duplicates land on both sides "
-                 "of a split, held-out metrics are optimistically inflated."),
-        pitfalls=[Pitfall(metric="any held-out metric with duplicates across splits",
-                          reason="The same row in train and test leaks the answer, overstating generalization.")],
-        preprocessing_notes=["De-duplicate before splitting; if repeats are legitimate, split by group/id so copies stay on one side."])
+@rule("high_correlation", "1", thresholds={"abs_spearman": 0.95})
+def high_correlation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    pairs = p.relations.high_corr_pairs
+    if not pairs:
+        return
+    e = out.ev("relations.high_corr", "Feature pairs with |Spearman| >= 0.95", len(pairs),
+               p.relations.corr_method, columns=sorted({x for pr in pairs for x in (pr["a"], pr["b"])}))
+    f = out.finding("high_correlation", Severity.INFO, Trigger.FIRED,
+                    f"{len(pairs)} feature pair(s) are nearly collinear (|rho| >= 0.95).", [e])
+    out.decision("high_correlation", "Expect unstable coefficients / importances", DecisionClass.REVIEW,
+                 "data_review", "Do not interpret individual coefficients or importances of these pairs; "
+                 "consider keeping one per pair if interpretability matters.",
+                 "Collinear features split credit arbitrarily between them.", finding_ids=[f], evidence_ids=[e])
 
 
-@rule("zero_inflation", applies_to=[(TAB, Task.REGRESSION)])
-def zero_inflation(p: DataProfile) -> Finding | None:
-    zf = (p.modality_stats.get("target") or {}).get("zero_fraction")
-    if zf is None or zf < ZERO_INFLATION_WARN:
-        return None
-    return Finding(
-        id="zero_inflation", severity=Severity.WARN,
-        evidence={"zero_fraction": round(zf, 3)},
-        message=(f"{zf:.0%} of target values are exactly zero (zero-inflated). "
-                 "Relative-error metrics break down around zero."),
-        candidate_metrics=MetricSuggestion(
-            primary=["MAE", "Tweedie deviance"],
-            secondary=["two-part evaluation: P(zero) + error on positives"],
-            rationale="Zero-inflated targets often need a hurdle / two-part view."),
-        pitfalls=[Pitfall(metric="MAPE / MSLE", reason="Undefined or explosive when true values are zero.")],
-        preprocessing_notes=["Consider a two-part (hurdle) model: classify zero-vs-positive, then regress on the positives."])
+# --------------------------------------------------------------------------- #
+# Columns
+# --------------------------------------------------------------------------- #
+
+@rule("constant_columns", "1")
+def constant_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    cols = p.kind_of(ColumnKind.CONSTANT)
+    if not cols:
+        return
+    e = out.ev("columns.constant", "Constant columns", cols, "at most one distinct non-missing value", columns=cols)
+    f = out.finding("constant_columns", Severity.INFO, Trigger.FIRED,
+                    f"{len(cols)} column(s) have a single value and carry no information: {cols}.", [e], cols)
+    out.decision("drop_constant", f"Drop {len(cols)} constant column(s)", DecisionClass.PROCEDURAL, "columns",
+                 f"Exclude {cols} from the features.",
+                 "A column with one value cannot inform any model; dropping it changes no prediction.",
+                 finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": cols}))
 
 
-@rule("negative_target_values", applies_to=[(TAB, Task.REGRESSION)])
-def negative_target_values(p: DataProfile) -> Finding | None:
-    nf = (p.modality_stats.get("target") or {}).get("negative_fraction")
-    if not nf:
-        return None
-    return Finding(
-        id="negative_target_values", severity=Severity.INFO,
-        evidence={"negative_fraction": round(nf, 3)},
-        message=(f"{nf:.0%} of target values are negative. Log-scale transforms and "
-                 "log-based metrics are not applicable as-is."),
-        pitfalls=[Pitfall(metric="MSLE / log-RMSE", reason="Require non-negative values; undefined for negatives."),
-                  Pitfall(metric="MAPE", reason="Sign changes near zero make percentage error unstable.")],
-        preprocessing_notes=["For a multiplicative scale, shift the target or use a signed transform (e.g. arcsinh) instead of log."])
+@rule("unsupported_columns", "2")
+def unsupported_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    cols = [c for c, cp in p.columns.items()
+            if cp.kind in (ColumnKind.DATETIME, ColumnKind.TEXT)
+            or (cp.kind is ColumnKind.ID_LIKE and not cp.dtype.startswith(("int", "uint", "Int", "UInt")))]
+    if not cols:
+        return
+    kinds = {c: p.columns[c].kind.value for c in cols}
+    e = out.ev("columns.unsupported", "Columns not usable raw in v1", kinds,
+               "column-kind inference (datetime, free text, string identifiers)", columns=cols)
+    f = out.finding("unsupported_columns", Severity.WARN, Trigger.FIRED,
+                    f"{len(cols)} column(s) are not supported raw by the v1 tabular pipeline: {kinds}. "
+                    "They may carry strong signal.", [e], cols)
+    out.decision("unsupported_columns", f"Engineer features from {len(cols)} datetime/text/id column(s)",
+                 DecisionClass.REVIEW, "columns",
+                 f"{cols} are not in the exported feature matrix because v1 has no encoder for raw datetimes, "
+                 "free text or string identifiers. If they matter, derive features yourself (date parts, elapsed "
+                 "time, text vectors, entity statistics) and re-run.",
+                 "Unsupported in v1 is a capability limit of metriclens, not a judgement that these columns are "
+                 "uninformative; dates and text are often among the strongest signals.",
+                 risk="Leaving them out can cost real signal. If one identifies an entity with repeated rows, pass it "
+                      "as groups=; if one orders rows in time, pass it as time_col=.",
+                 finding_ids=[f], evidence_ids=[e])
 
 
-@rule("heavy_tailed_target", applies_to=[(TAB, Task.REGRESSION)])
-def heavy_tailed_target(p: DataProfile) -> Finding | None:
-    kurt = (p.modality_stats.get("target") or {}).get("kurtosis")
-    if kurt is None or kurt < KURTOSIS_WARN:
-        return None
-    return Finding(
-        id="heavy_tailed_target", severity=Severity.WARN,
-        evidence={"kurtosis": round(kurt, 2)},
-        message=(f"Target is heavy-tailed (excess kurtosis={kurt:.1f}). A few extreme values "
-                 "will dominate squared-error metrics."),
-        candidate_metrics=MetricSuggestion(
-            primary=["MAE", "quantile / Huber loss"],
-            secondary=["report the count and size of large errors separately"],
-            rationale="Robust losses resist domination by rare extremes."),
-        pitfalls=[Pitfall(metric="RMSE / MSE", reason="A handful of extreme points can swing the value arbitrarily.")])
+@rule("id_like_columns", "1", thresholds={"unique_ratio": 0.95})
+def id_like_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    for c, cp in p.columns.items():
+        if cp.kind is not ColumnKind.ID_LIKE or not cp.dtype.startswith(("int", "uint", "Int", "UInt")):
+            continue
+        e = out.ev(f"col.{c}.unique_ratio", f"Unique ratio · {c}", cp.unique_ratio,
+                   f"distinct / non-missing values; {cp.kind_reason}", columns=[c])
+        f = out.finding(f"id_like.{c}", Severity.WARN, Trigger.FIRED,
+                        f"'{c}' looks like an identifier ({cp.kind_reason}). This is a review item, not a leakage verdict.",
+                        [e], [c])
+        contextual(out, ctx, qid=f"id_like.{c}", question=f"Is '{c}' an identifier rather than a measurement?",
+                   options=[("identifier", "Yes, an identifier", "drop it from the features"),
+                            ("feature", "No, a real feature", "keep it")],
+                   confirm="identifier", decision_id=f"drop_id.{c}", title=f"Drop identifier '{c}'",
+                   stage="columns", action=f"Exclude '{c}' from the features.",
+                   rationale="Row identifiers let models memorize rows; their order can also encode time or the target.",
+                   risk="If it identifies an entity with repeated rows, pass it as groups= rather than just dropping it.",
+                   finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": [c]}))
+
+
+@rule("leakage_hint", "2", thresholds={"association": 0.95, "uncertain_association": 0.90, "abs_pearson": 0.98})
+def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    for c, cp in p.columns.items():
+        a = cp.association
+        pr = p.relations.pearson_target.get(c)
+        strong = (a is not None and a >= 0.95) or (pr is not None and pr >= 0.98)
+        weak = a is not None and 0.90 <= a < 0.95
+        if not (strong or weak):
+            continue
+        evs = []
+        if a is not None:
+            evs.append(out.ev(f"col.{c}.association", f"Single-feature held-out score · {c}", a,
+                              p.relations.association_method, columns=[c, p.target.name]))
+        if pr is not None and pr >= 0.98:
+            evs.append(out.ev(f"col.{c}.pearson", f"|Pearson r| with target · {c}", pr,
+                              "Pearson correlation on dev rows", columns=[c, p.target.name]))
+        if weak and not strong:
+            out.finding(f"leakage_hint.{c}", Severity.INFO, Trigger.UNCERTAIN,
+                        f"'{c}' alone predicts the target unusually well (score {a:.3f}); below the leakage-hint "
+                        "threshold but worth a look.", evs, [c])
+            continue
+        sev = Severity.CRITICAL if (a or 0) >= 0.99 or (pr or 0) >= 0.995 else Severity.WARN
+        f = out.finding(f"leakage_hint.{c}", sev, Trigger.FIRED,
+                        f"Single-feature predictive leakage hint — manual review required: '{c}' alone predicts "
+                        f"the target (held-out score {a if a is not None else float('nan'):.3f}). High predictive "
+                        "power is not proof of leakage; genuinely strong features look the same.", evs, [c])
+        contextual(out, ctx, qid=f"leakage.{c}",
+                   question=f"Is '{c}' known at prediction time, before the target is observed?",
+                   options=[("no", "No, it is only known afterwards", "drop it from the features"),
+                            ("yes", "Yes, it is available in production", "keep it; the signal is genuine")],
+                   confirm="no", decision_id=f"drop_leak.{c}", title=f"Drop '{c}' (possible leak)",
+                   stage="columns", action=f"Exclude '{c}' from the features.",
+                   rationale="A feature that is a consequence or copy of the target makes every metric meaningless.",
+                   risk="Some features are legitimately this strong; dropping one throws away real signal.",
+                   verify_hint="Trace how and when the column is recorded relative to the target.",
+                   finding_ids=[f], evidence_ids=evs, step=Step(kind="drop_columns", params={"columns": [c]}))
+
+
+# --------------------------------------------------------------------------- #
+# Preprocessing
+# --------------------------------------------------------------------------- #
+
+@rule("fit_in_fold", "1")
+def fit_in_fold(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    miss = p.dataset.missing_columns
+    cat = p.kind_of(ColumnKind.CATEGORICAL)
+    num = p.kind_of(ColumnKind.NUMERIC) + p.kind_of(ColumnKind.BOOLEAN)
+    evs = [out.ev("columns.kinds", "Column kinds", p.dataset.kind_counts, "column-kind inference")]
+    if miss:
+        evs.append(out.ev("columns.missing", "Columns with missing values", len(miss), "count of columns with any missing value",
+                          columns=miss))
+    parts = []
+    if num:
+        parts.append(f"{len(num)} numeric/boolean: median imputation" + (" + missing indicator" if miss else "") + ", standard scaling")
+    if cat:
+        parts.append(f"{len(cat)} categorical: 'missing' category + one-hot (categories under 1% grouped)")
+    out.decision("fit_in_fold", "Fit all preprocessing inside each fold", DecisionClass.PROCEDURAL, "preprocessing",
+                 "Put imputation, encoding and scaling in one sklearn Pipeline so they are re-fit on every training fold"
+                 + (f" ({'; '.join(parts)})." if parts else "."),
+                 "Statistics computed on the full data (medians, category lists, scalers) leak test-fold information.",
+                 risk="These defaults are generic; replace them where domain knowledge says otherwise.",
+                 evidence_ids=evs)
+
+
+@rule("skewed_features", "1", thresholds={"abs_skew": 2.0})
+def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    cols, trig_any = [], []
+    for c, cp in p.columns.items():
+        if cp.kind is not ColumnKind.NUMERIC or cp.stats.get("skew") is None:
+            continue
+        t = trigger(abs(cp.stats["skew"]), abs_ci(cp.ci.get("skew")), 2.0)
+        if t:
+            cols.append(c)
+            trig_any.append(t)
+    if not cols:
+        return
+    evs = [out.ev(f"col.{c}.skew", f"Skewness · {c}", p.columns[c].stats["skew"], BOOT,
+                  ci=p.columns[c].ci.get("skew"), columns=[c]) for c in cols]
+    trig = Trigger.FIRED if Trigger.FIRED in trig_any else Trigger.UNCERTAIN
+    f = out.finding("skewed_features", Severity.INFO, trig,
+                    f"{len(cols)} numeric feature(s) are strongly skewed (|skew| >= 2).", evs, cols)
+    out.decision("power_transform", f"Power-transform {len(cols)} skewed feature(s)", DecisionClass.CONDITIONAL,
+                 "preprocessing", f"Apply a Yeo-Johnson transform to {cols[:8]}{' ...' if len(cols) > 8 else ''}.",
+                 "Skewed inputs can hurt linear and distance-based models; tree ensembles are usually far less "
+                 "sensitive. The effect is model-dependent, so it is tested, not assumed.",
+                 risk="Transforms make coefficients harder to interpret and can amplify noise in the tails.",
+                 verify_hint="Compare CV scores with and without the transform for your model family.",
+                 finding_ids=[f], evidence_ids=evs, trig=trig,
+                 step=Step(kind="power_transform", params={"columns": cols}))
+
+
+@rule("high_cardinality", "1", thresholds={"cardinality": 50})
+def high_cardinality(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    cols = [c for c, cp in p.columns.items() if cp.kind is ColumnKind.CATEGORICAL and cp.cardinality > 50]
+    if not cols:
+        return
+    evs = [out.ev(f"col.{c}.cardinality", f"Distinct categories · {c}", p.columns[c].cardinality,
+                  "distinct non-missing values", columns=[c]) for c in cols]
+    f = out.finding("high_cardinality", Severity.INFO, Trigger.FIRED,
+                    f"{len(cols)} categorical column(s) have more than 50 categories.", evs, cols)
+    out.decision("target_encode", f"Target-encode {len(cols)} high-cardinality column(s)", DecisionClass.CONDITIONAL,
+                 "preprocessing", f"Use sklearn TargetEncoder (internally cross-fitted) for {cols}.",
+                 "One-hot with rare categories grouped loses information on long tails; target encoding keeps it "
+                 "but can overfit. Only an experiment can tell which wins here.",
+                 risk="Target encoding fit outside the fold is a leak; TargetEncoder inside the Pipeline avoids that.",
+                 finding_ids=[f], evidence_ids=evs, trig=Trigger.FIRED,
+                 step=Step(kind="target_encode", params={"columns": cols}))
+
+
+# --------------------------------------------------------------------------- #
+# Target
+# --------------------------------------------------------------------------- #
+
+@rule("class_imbalance", "1", thresholds={"imbalance_ratio": 3.0, "critical_ratio": 10.0}, tasks=(CLS,))
+def class_imbalance(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    s = p.target.stats
+    ratio = s.get("imbalance_ratio")
+    t = trigger(ratio, p.target.ci.get("imbalance_ratio"), 3.0)
+    if t is None or ratio is None:
+        return
+    e1 = out.ev("target.imbalance", "Imbalance ratio (largest / smallest class)", ratio, BOOT,
+                ci=p.target.ci.get("imbalance_ratio"), columns=[p.target.name])
+    e2 = out.ev("target.majority", "Majority-class share (= accuracy of always predicting it)",
+                s.get("majority_fraction"), "class counts on dev rows", columns=[p.target.name])
+    sev = Severity.CRITICAL if ratio >= 10 else Severity.WARN
+    f = out.finding("class_imbalance", sev, t,
+                    f"Classes are imbalanced {ratio:.1f}:1; always predicting the majority class already scores "
+                    f"{s.get('majority_fraction', 0):.1%} accuracy.", [e1, e2], [p.target.name])
+    if ctx.has_estimator and "class_weight" not in ctx.estimator_params:
+        status, note = DecisionStatus.NOT_APPLICABLE, "Your estimator has no class_weight parameter."
+    else:
+        status, note = None, ""
+    out.decision("class_weight", "Weight classes inversely to frequency", DecisionClass.CONDITIONAL, "target",
+                 "Set class_weight='balanced' on the estimator.",
+                 "Re-weighting can raise minority-class recall, at the cost of more false positives and "
+                 "distorted probabilities.",
+                 risk="Probabilities are no longer calibrated; re-calibrate if you need them.",
+                 verify_hint="Compare the chosen metric with and without class weights.",
+                 finding_ids=[f], evidence_ids=[e1, e2], trig=t, status=status, note=note,
+                 step=Step(kind="class_weight", params={"value": "balanced"}))
+
+
+@rule("target_skew", "1", thresholds={"abs_skew": 1.0, "outlier_fraction": 0.05}, tasks=(REG,))
+def target_skew(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    s, ci = p.target.stats, p.target.ci
+    skew = s.get("skew")
+    if skew is None:
+        return
+    t1 = trigger(abs(skew), abs_ci(ci.get("skew")), 1.0)
+    t2 = trigger(s.get("outlier_fraction"), ci.get("outlier_fraction"), 0.05)
+    if not (t1 or t2):
+        return
+    t = Trigger.FIRED if Trigger.FIRED in (t1, t2) else Trigger.UNCERTAIN
+    e1 = out.ev("target.skew", "Target skewness", skew, BOOT, ci=ci.get("skew"), columns=[p.target.name])
+    e2 = out.ev("target.outliers", "Target IQR-outlier fraction", s.get("outlier_fraction"),
+                "share outside [Q1 - 1.5 IQR, Q3 + 1.5 IQR]; " + BOOT, ci=ci.get("outlier_fraction"),
+                columns=[p.target.name])
+    sev = Severity.WARN if abs(skew) >= 2 or (s.get("outlier_fraction") or 0) >= 0.05 else Severity.INFO
+    f = out.finding("target_skew", sev, t,
+                    f"Target is skewed (skew={skew:.2f}, {s.get('outlier_fraction', 0):.1%} IQR-outliers): "
+                    "squared-error metrics will be driven by the largest values.", [e1, e2], [p.target.name])
+    neg = s.get("negative_fraction") or 0
+    if neg > 0:
+        e3 = out.ev("target.negative", "Negative target share", neg, "share of target values < 0", columns=[p.target.name])
+        out.decision("log_target", "No log transform: target has negative values", DecisionClass.REVIEW, "target",
+                     "A log transform is undefined here; if a multiplicative scale makes sense, consider a signed "
+                     "transform (e.g. arcsinh) and test it yourself.",
+                     f"{neg:.1%} of target values are negative.", finding_ids=[f], evidence_ids=[e1, e3])
+        return
+    out.decision("log_target", "Model log(1 + target)", DecisionClass.CONDITIONAL, "target",
+                 "Wrap the estimator in TransformedTargetRegressor(func=log1p, inverse_func=expm1).",
+                 "On a skewed, non-negative target, fitting on the log scale often reduces absolute error; it also "
+                 "changes what the model optimizes (closer to relative error).",
+                 risk="Predictions back-transformed from the log scale are biased low for the mean; RMSE can get worse "
+                      "while MAE improves.",
+                 verify_hint="Compare MAE and RMSE with and without the transform.",
+                 finding_ids=[f], evidence_ids=[e1, e2], trig=t, step=Step(kind="log_target"))
+
+
+@rule("heavy_tailed_target", "1", thresholds={"excess_kurtosis": 3.0}, tasks=(REG,))
+def heavy_tailed_target(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    k = p.target.stats.get("kurtosis")
+    t = trigger(k, p.target.ci.get("kurtosis"), 3.0)
+    if t is None:
+        return
+    e = out.ev("target.kurtosis", "Target excess kurtosis", k, BOOT, ci=p.target.ci.get("kurtosis"),
+               columns=[p.target.name])
+    out.finding("heavy_tailed_target", Severity.WARN, t,
+                f"Target is heavy-tailed (excess kurtosis={k:.1f}): a few extreme values can swing RMSE.", [e],
+                [p.target.name])
+
+
+@rule("zero_inflation", "1", thresholds={"zero_fraction": 0.3}, tasks=(REG,))
+def zero_inflation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    z = p.target.stats.get("zero_fraction")
+    t = trigger(z, p.target.ci.get("zero_fraction"), 0.3)
+    if t is None:
+        return
+    e = out.ev("target.zeros", "Target zero share", z, WILSON, ci=p.target.ci.get("zero_fraction"),
+               columns=[p.target.name])
+    f = out.finding("zero_inflation", Severity.WARN, t,
+                    f"{z:.0%} of target values are exactly zero (zero-inflated).", [e], [p.target.name])
+    out.decision("zero_inflation", "Consider a two-part or Tweedie model", DecisionClass.REVIEW, "target",
+                 "Evaluate zero-vs-positive and the size of positives separately, or try a Tweedie/Poisson loss. "
+                 "metriclens does not test model families.",
+                 "A single regressor tends to predict small positive values everywhere on zero-inflated targets.",
+                 finding_ids=[f], evidence_ids=[e])

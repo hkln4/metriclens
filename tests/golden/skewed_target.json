@@ -1,0 +1,95 @@
+{
+ "task": "regression",
+ "findings": [
+  [
+   "f.target_skew",
+   "warn",
+   "fired"
+  ],
+  [
+   "f.heavy_tailed_target",
+   "warn",
+   "fired"
+  ]
+ ],
+ "decisions": [
+  [
+   "d.cv",
+   "procedural",
+   "applied",
+   "split"
+  ],
+  [
+   "d.holdout",
+   "procedural",
+   "applied",
+   "final"
+  ],
+  [
+   "d.fit_in_fold",
+   "procedural",
+   "applied",
+   "preprocessing"
+  ],
+  [
+   "d.log_target",
+   "conditional",
+   "proposed",
+   "target"
+  ],
+  [
+   "d.metric",
+   "contextual",
+   "awaiting_user",
+   "metrics"
+  ]
+ ],
+ "questions": [
+  "q.metric_priority"
+ ],
+ "metric_plan": [
+  [
+   "neg_mean_absolute_error",
+   "neg_root_mean_squared_error"
+  ],
+  "neg_mean_absolute_error"
+ ],
+ "figures": [
+  "fig.target",
+  "fig.target_log",
+  "fig.association",
+  "fig.correlation"
+ ],
+ "roadmap": [
+  [
+   "split",
+   [
+    "d.cv"
+   ]
+  ],
+  [
+   "preprocessing",
+   [
+    "d.fit_in_fold"
+   ]
+  ],
+  [
+   "target",
+   [
+    "d.log_target"
+   ]
+  ],
+  [
+   "metrics",
+   [
+    "d.metric"
+   ]
+  ],
+  [
+   "final",
+   [
+    "d.holdout"
+   ]
+  ]
+ ]
+}

@@ -1,0 +1,90 @@
+{
+ "task": "classification",
+ "findings": [
+  [
+   "f.class_imbalance",
+   "critical",
+   "fired"
+  ]
+ ],
+ "decisions": [
+  [
+   "d.cv",
+   "procedural",
+   "applied",
+   "split"
+  ],
+  [
+   "d.holdout",
+   "procedural",
+   "applied",
+   "final"
+  ],
+  [
+   "d.fit_in_fold",
+   "procedural",
+   "applied",
+   "preprocessing"
+  ],
+  [
+   "d.class_weight",
+   "conditional",
+   "proposed",
+   "target"
+  ],
+  [
+   "d.metric",
+   "contextual",
+   "awaiting_user",
+   "metrics"
+  ]
+ ],
+ "questions": [
+  "q.metric_priority"
+ ],
+ "metric_plan": [
+  [
+   "balanced_accuracy",
+   "f1_macro",
+   "average_precision"
+  ],
+  "balanced_accuracy"
+ ],
+ "figures": [
+  "fig.target",
+  "fig.association",
+  "fig.correlation"
+ ],
+ "roadmap": [
+  [
+   "split",
+   [
+    "d.cv"
+   ]
+  ],
+  [
+   "preprocessing",
+   [
+    "d.fit_in_fold"
+   ]
+  ],
+  [
+   "target",
+   [
+    "d.class_weight"
+   ]
+  ],
+  [
+   "metrics",
+   [
+    "d.metric"
+   ]
+  ],
+  [
+   "final",
+   [
+    "d.holdout"
+   ]
+  ]
+ ]
+}

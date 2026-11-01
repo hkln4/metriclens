@@ -4,29 +4,87 @@ build-backend = "hatchling.build"
 
 [project]
 name = "metriclens"
-version = "0.0.0"
-description = "Data-aware evaluation roadmaps: which metrics matter for your data, and why."
+version = "0.1.0"
+description = "Decision-driven EDA for tabular supervised learning: evidence-backed, verifiable pre-training decisions."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "hkln4" }]
+keywords = ["machine-learning", "eda", "evaluation", "scikit-learn", "data-profiling", "leakage"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
-# Core dependencies are kept deliberately minimal. A library forces every one of
-# these on its users, so only what the deterministic core genuinely needs lives
-# here. Pins are loose lower-bounds, never exact — exact pins belong to
-# applications, not libraries.
+# The deterministic core (profile, rules, report, HTML) needs only these.
+# Loose lower bounds: exact pins belong to applications, not libraries.
 dependencies = [
     "pydantic>=2",
-    "numpy>=1.21",
+    "numpy>=1.23",
     "pandas>=1.5",
 ]
 
 [project.optional-dependencies]
-# LLM enrichment is opt-in. The anthropic SDK is never imported at module top
-# level (see llm/anthropic.py), so `import metriclens` works without this extra.
+# experiments, export to sklearn Pipeline
+verify = ["scikit-learn>=1.4", "scipy>=1.9"]
+# only needed for to_html(plotlyjs="inline") — offline single-file reports
+report = ["plotly>=5"]
 llm = ["anthropic>=0.40"]
-# Reserved for the first multi-modality extension.
-image = ["pillow>=9"]
-dev = ["pytest>=7"]
+gemini = ["google-genai>=1.0"]
+all = ["metriclens[verify,report,llm]"]
+dev = [
+    "metriclens[verify,report]",
+    "pytest>=7",
+    "pytest-cov>=4",
+    "ruff>=0.5",
+    "mypy>=1.8",
+    "pandas-stubs",
+]
+
+[project.scripts]
+metriclens = "metriclens.cli:main"
+
+[project.urls]
+Changelog = "https://github.com/hkln4/metriclens/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["metriclens"]
+
+[tool.hatch.build.targets.sdist]
+include = ["metriclens", "tests", "benchmarks", "README.md", "CHANGELOG.md", "LICENSE", "ARCHITECTURE.md"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["E501", "S101", "B008", "UP007", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
+"benchmarks/*" = ["S"]
+"examples/*" = ["S"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: experiments with real models (deselect with -m 'not slow')"]
+
+[tool.coverage.run]
+source = ["metriclens"]
+omit = ["metriclens/llm/anthropic.py", "metriclens/llm/gemini.py"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

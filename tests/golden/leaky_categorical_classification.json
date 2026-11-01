@@ -1,0 +1,90 @@
+{
+ "task": "classification",
+ "findings": [
+  [
+   "f.leakage_hint.status",
+   "critical",
+   "fired"
+  ]
+ ],
+ "decisions": [
+  [
+   "d.cv",
+   "procedural",
+   "applied",
+   "split"
+  ],
+  [
+   "d.holdout",
+   "procedural",
+   "applied",
+   "final"
+  ],
+  [
+   "d.drop_leak.status",
+   "contextual",
+   "awaiting_user",
+   "columns"
+  ],
+  [
+   "d.fit_in_fold",
+   "procedural",
+   "applied",
+   "preprocessing"
+  ],
+  [
+   "d.metric",
+   "contextual",
+   "awaiting_user",
+   "metrics"
+  ]
+ ],
+ "questions": [
+  "q.leakage.status",
+  "q.metric_priority"
+ ],
+ "metric_plan": [
+  [
+   "accuracy",
+   "f1_macro"
+  ],
+  "accuracy"
+ ],
+ "figures": [
+  "fig.target",
+  "fig.association",
+  "fig.correlation"
+ ],
+ "roadmap": [
+  [
+   "split",
+   [
+    "d.cv"
+   ]
+  ],
+  [
+   "columns",
+   [
+    "d.drop_leak.status"
+   ]
+  ],
+  [
+   "preprocessing",
+   [
+    "d.fit_in_fold"
+   ]
+  ],
+  [
+   "metrics",
+   [
+    "d.metric"
+   ]
+  ],
+  [
+   "final",
+   [
+    "d.holdout"
+   ]
+  ]
+ ]
+}

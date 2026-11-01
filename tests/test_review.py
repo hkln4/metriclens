@@ -1,65 +1,64 @@
-"""Second pass: review() judges whether the init hypothesis held against real
-errors, for both regression (tail domination) and classification (imbalance)."""
 import numpy as np
 import pandas as pd
 
 import metriclens as ml
 
 
-def _skewed_regression_roadmap():
-    rng = np.random.default_rng(0)
-    y = rng.exponential(2.0, size=2000)
-    df = pd.DataFrame({"f1": rng.normal(size=2000), "target": y})
-    return ml.analyze(df, target="target", use_llm=False)
+def _skew_report():
+    from fixtures import skewed_target
+
+    return ml.analyze(skewed_target(), "y", task="regression")
 
 
-def test_regression_hypothesis_holds_when_tails_dominate():
-    roadmap = _skewed_regression_roadmap()
+def test_regression_tails_hold_against_gaussian_reference():
+    rep = _skew_report()
     rng = np.random.default_rng(1)
-    n = 2000
-    y_true = rng.exponential(2.0, size=n)
-    # mostly tiny errors, a few huge ones -> tails dominate, hypothesis holds
-    y_pred = y_true + rng.normal(0, 0.05, n)
-    y_pred[:20] += 50.0
-    rep = ml.review(y_true, y_pred, roadmap=roadmap)
-    assert rep.task == "regression"
-    check = next(c for c in rep.checks
-                 if c.finding_id in {"target_skew", "heavy_tailed_target"})
-    assert check.held is True
-    assert rep.metrics["RMSE"] > rep.metrics["MAE"]
+    y = rng.exponential(2.0, 2000)
+    p = y + rng.normal(0, 0.05, 2000)
+    p[:20] += 50
+    rv = ml.review(y, p, rep)
+    c = next(c for c in rv.checks if c.finding_id == "f.target_skew")
+    assert c.held is True and "Gaussian" in c.reference
 
 
-def test_regression_hypothesis_fails_when_errors_even():
-    roadmap = _skewed_regression_roadmap()
+def test_regression_tails_do_not_hold_for_gaussian_errors():
+    rep = _skew_report()
     rng = np.random.default_rng(2)
-    n = 2000
-    y_true = rng.exponential(2.0, size=n)
-    y_pred = y_true + rng.normal(0, 1.0, n)  # uniform-ish errors, no tail spike
-    rep = ml.review(y_true, y_pred, roadmap=roadmap)
-    check = next(c for c in rep.checks
-                 if c.finding_id in {"target_skew", "heavy_tailed_target"})
-    assert check.held is False
+    y = rng.exponential(2.0, 4000)
+    rv = ml.review(y, y + rng.normal(0, 1, 4000), rep)
+    assert next(c for c in rv.checks if c.finding_id == "f.target_skew").held is False
 
 
-def test_classification_imbalance_hypothesis_holds_for_majority_predictor():
-    rng = np.random.default_rng(3)
-    n = 2000
-    df = pd.DataFrame({"f1": rng.normal(size=n),
-                       "label": (rng.random(n) < 0.05).astype(int)})
-    roadmap = ml.analyze(df, target="label", use_llm=False)
-    y_true = df["label"].to_numpy()
-    y_pred = np.zeros_like(y_true)  # trivial majority-class predictor
-    rep = ml.review(y_true, y_pred, roadmap=roadmap, task="classification")
-    assert rep.task == "classification"
-    assert rep.metrics["accuracy"] >= 0.8
-    assert rep.metrics["minority_recall"] == 0.0
-    check = next(c for c in rep.checks if c.finding_id == "class_imbalance")
-    assert check.held is True
+def test_classification_majority_predictor(imb_df):
+    rep = ml.analyze(imb_df, "y")
+    y = imb_df.y.to_numpy()
+    rv = ml.review(y, np.zeros_like(y), rep, y_score=np.random.default_rng(0).random(len(y)))
+    assert rv.metrics["minority_recall"] == 0.0
+    assert next(c for c in rv.checks if c.finding_id == "f.class_imbalance").held is True
+    beat = next(c for c in rv.checks if "majority" in c.hypothesis)
+    assert beat.held is False
+    assert rv.thresholds and "roc_auc" in rv.metrics
+    assert {f.id for f in rv.figures} >= {"fig.review.confusion", "fig.review.pr"}
 
 
-def test_review_without_roadmap_still_reports():
-    y_true = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    y_pred = np.array([1.1, 2.0, 2.8, 4.2, 10.0])
-    rep = ml.review(y_true, y_pred, task="regression")
-    assert rep.metrics["MAE"] > 0
-    assert rep.checks  # an observation check is always produced
+def test_unverified_assumptions_are_listed(imb_df):
+    rep = ml.analyze(imb_df, "y")
+    y = imb_df.y.to_numpy()
+    rv = ml.review(y, y, rep)
+    ids = {u["id"] for u in rv.unverified}
+    assert "d.metric" in ids and "d.class_weight" in ids
+    assert "never verified" in rv.to_text()
+
+
+def test_segments_and_html(reg_df):
+    y = reg_df.y.to_numpy()
+    p = y + np.where(reg_df.cat == "a", 3.0, 0.1)
+    rv = ml.review(y, p, segments=reg_df.cat, task="regression")
+    assert rv.segments[0]["value"] == "a"
+    html = rv.to_html()
+    assert 'id="review"' in html and "fig.review.segments" in html
+
+
+def test_review_without_report():
+    rv = ml.review(pd.Series([1.0, 2, 3, 4, 5]), [1.1, 2, 2.8, 4.2, 10.0], task="regression")
+    assert rv.metrics["MAE"] > 0 and rv.checks and not rv.unverified

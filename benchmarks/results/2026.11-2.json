@@ -1,0 +1,626 @@
+{
+  "manifest_version": "2026.11-2",
+  "metriclens_version": "0.1.0",
+  "python": "3.13.1",
+  "protocol": "Each case runs ml.analyze with default options and seed 0. A check passes when the rule's finding matches the expectation: fired / none / uncertain (near threshold).",
+  "cases": [
+    {
+      "case": "clean_regression",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "target_skew",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "leakage_hint",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "duplicate_rows",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "id_like_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "high_missingness",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "small_data",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "constant_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "zero_inflation",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "heavy_tailed_target",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "clean_classification",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "class_imbalance",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "leakage_hint",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "duplicate_rows",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "id_like_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "small_data",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "imbalanced",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "class_imbalance",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "mild_imbalance_near_threshold",
+      "source": "synthetic",
+      "rows": 400,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "class_imbalance",
+          "expect": "uncertain",
+          "ok": true,
+          "got": [
+            "uncertain"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "skewed_target",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "target_skew",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "leaky_numeric_regression",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "leakage_hint",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "leaky_categorical_classification",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "leakage_hint",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "duplicates",
+      "source": "synthetic",
+      "rows": 3300,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "duplicate_rows",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "id_column",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "id_like_columns",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        },
+        {
+          "rule": "leakage_hint",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "integer_feature_not_id",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "id_like_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "datetime_column",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "temporal_order",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        },
+        {
+          "rule": "id_like_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "high_missing",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "high_missingness",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "high_cardinality",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "high_cardinality",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        },
+        {
+          "rule": "id_like_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "count_target_inferred_regression",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "task_confirmation",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        },
+        {
+          "rule": "class_imbalance",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "small_data",
+      "source": "synthetic",
+      "rows": 300,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "small_data",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "zero_inflated",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "zero_inflation",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "constant_column",
+      "source": "synthetic",
+      "rows": 3000,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "constant_columns",
+          "expect": "fired",
+          "ok": true,
+          "got": [
+            "fired"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "sk_breast_cancer",
+      "source": "sklearn:load_breast_cancer",
+      "rows": 569,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "leakage_hint",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "duplicate_rows",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "id_like_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "sk_diabetes",
+      "source": "sklearn:load_diabetes",
+      "rows": 442,
+      "task": "regression",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "leakage_hint",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "duplicate_rows",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "id_like_columns",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "sk_wine",
+      "source": "sklearn:load_wine",
+      "rows": 178,
+      "task": "classification",
+      "ok": true,
+      "checks": [
+        {
+          "rule": "class_imbalance",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "leakage_hint",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        },
+        {
+          "rule": "duplicate_rows",
+          "expect": "none",
+          "ok": true,
+          "got": [
+            "none"
+          ]
+        }
+      ]
+    }
+  ],
+  "rules": {
+    "target_skew": {
+      "checks": 2,
+      "passed": 2
+    },
+    "leakage_hint": {
+      "checks": 8,
+      "passed": 8
+    },
+    "duplicate_rows": {
+      "checks": 6,
+      "passed": 6
+    },
+    "id_like_columns": {
+      "checks": 8,
+      "passed": 8
+    },
+    "high_missingness": {
+      "checks": 2,
+      "passed": 2
+    },
+    "small_data": {
+      "checks": 3,
+      "passed": 3
+    },
+    "constant_columns": {
+      "checks": 2,
+      "passed": 2
+    },
+    "zero_inflation": {
+      "checks": 2,
+      "passed": 2
+    },
+    "heavy_tailed_target": {
+      "checks": 1,
+      "passed": 1
+    },
+    "class_imbalance": {
+      "checks": 5,
+      "passed": 5
+    },
+    "temporal_order": {
+      "checks": 1,
+      "passed": 1
+    },
+    "high_cardinality": {
+      "checks": 1,
+      "passed": 1
+    },
+    "task_confirmation": {
+      "checks": 1,
+      "passed": 1
+    }
+  },
+  "verification": [
+    {
+      "dataset": "sklearn:load_breast_cancer",
+      "seconds": 7.7,
+      "dev_metric": "accuracy",
+      "decisions": {
+        "d.power_transform": "inconclusive"
+      },
+      "experiments": [
+        {
+          "decision": "d.power_transform",
+          "family": "linear_proxy",
+          "mean_diff": -0.008755375059722903,
+          "ci": [
+            -0.030427494991638715,
+            0.012916744872192909
+          ],
+          "p_holm": 0.7692032712867033,
+          "outcome": "no_difference"
+        },
+        {
+          "decision": "d.power_transform",
+          "family": "tree_proxy",
+          "mean_diff": 0.0021978021978022013,
+          "ci": [
+            -0.007103555231245941,
+            0.011499159626850344
+          ],
+          "p_holm": 0.7692032712867033,
+          "outcome": "no_difference"
+        }
+      ]
+    },
+    {
+      "dataset": "sklearn:load_diabetes",
+      "seconds": 1.8,
+      "dev_metric": "neg_mean_absolute_error",
+      "decisions": {},
+      "experiments": []
+    },
+    {
+      "dataset": "sklearn:load_wine",
+      "seconds": 2.4,
+      "dev_metric": "accuracy",
+      "decisions": {},
+      "experiments": []
+    }
+  ]
+}

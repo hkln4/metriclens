@@ -1,0 +1,57 @@
+{
+  "manifest_version": "2026.11-2",
+  "rules": {
+    "target_skew": {
+      "checks": 2,
+      "passed": 2
+    },
+    "leakage_hint": {
+      "checks": 8,
+      "passed": 8
+    },
+    "duplicate_rows": {
+      "checks": 6,
+      "passed": 6
+    },
+    "id_like_columns": {
+      "checks": 8,
+      "passed": 8
+    },
+    "high_missingness": {
+      "checks": 2,
+      "passed": 2
+    },
+    "small_data": {
+      "checks": 3,
+      "passed": 3
+    },
+    "constant_columns": {
+      "checks": 2,
+      "passed": 2
+    },
+    "zero_inflation": {
+      "checks": 2,
+      "passed": 2
+    },
+    "heavy_tailed_target": {
+      "checks": 1,
+      "passed": 1
+    },
+    "class_imbalance": {
+      "checks": 5,
+      "passed": 5
+    },
+    "temporal_order": {
+      "checks": 1,
+      "passed": 1
+    },
+    "high_cardinality": {
+      "checks": 1,
+      "passed": 1
+    },
+    "task_confirmation": {
+      "checks": 1,
+      "passed": 1
+    }
+  }
+}

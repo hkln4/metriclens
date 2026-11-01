@@ -1,0 +1,102 @@
+{
+ "task": "regression",
+ "findings": [
+  [
+   "f.datetime_columns",
+   "warn",
+   "fired"
+  ],
+  [
+   "f.unsupported_columns",
+   "warn",
+   "fired"
+  ]
+ ],
+ "decisions": [
+  [
+   "d.cv",
+   "procedural",
+   "applied",
+   "split"
+  ],
+  [
+   "d.holdout",
+   "procedural",
+   "applied",
+   "final"
+  ],
+  [
+   "d.temporal",
+   "contextual",
+   "awaiting_user",
+   "split"
+  ],
+  [
+   "d.unsupported_columns",
+   "review",
+   "needs_review",
+   "columns"
+  ],
+  [
+   "d.fit_in_fold",
+   "procedural",
+   "applied",
+   "preprocessing"
+  ],
+  [
+   "d.metric",
+   "contextual",
+   "awaiting_user",
+   "metrics"
+  ]
+ ],
+ "questions": [
+  "q.temporal",
+  "q.metric_priority"
+ ],
+ "metric_plan": [
+  [
+   "neg_mean_absolute_error",
+   "neg_root_mean_squared_error"
+  ],
+  "neg_mean_absolute_error"
+ ],
+ "figures": [
+  "fig.target",
+  "fig.association",
+  "fig.correlation"
+ ],
+ "roadmap": [
+  [
+   "split",
+   [
+    "d.cv",
+    "d.temporal"
+   ]
+  ],
+  [
+   "columns",
+   [
+    "d.unsupported_columns"
+   ]
+  ],
+  [
+   "preprocessing",
+   [
+    "d.fit_in_fold"
+   ]
+  ],
+  [
+   "metrics",
+   [
+    "d.metric"
+   ]
+  ],
+  [
+   "final",
+   [
+    "d.holdout"
+   ]
+  ]
+ ]
+}

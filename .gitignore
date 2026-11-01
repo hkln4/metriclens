@@ -1,9 +1,31 @@
+# secrets / local env
 .env
-__pycache__/
-.pytest_cache/
-.ipynb_checkpoints/
-.DS_Store
 .venv/
+venv/
 
-test.ipynb
-ARCHITECTURE.md
+# notebooks (scratch work; examples live in examples/*.py)
+*.ipynb
+.ipynb_checkpoints/
+
+# python / tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# build artefacts
+dist/
+build/
+*.egg-info/
+
+# OS
+.DS_Store
+
+# CLI default output when run inside the repo
+metriclens_report.html
+
+# private v0 design notes (kept locally, not published)
+ARCHITECTURE.v0.md
