@@ -25,7 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--task", choices=["classification", "regression"])
     rp.add_argument("--groups", help="column identifying entities that must not be split across folds")
     rp.add_argument("--time-col", help="column defining time order")
-    rp.add_argument("--holdout", type=float, default=0.2, help="holdout fraction; 0 disables it")
+    rp.add_argument("--holdout", type=float, default=None,
+                    help="ask metriclens to set aside this fraction before profiling (default: none)")
     rp.add_argument("--answer", action="append", default=[], metavar="QUESTION=OPTION",
                     help="answer a report question, e.g. metric_priority=miss_costly (repeatable)")
     rp.add_argument("--verify", action="store_true", help="run the bounded experiments (proxy models)")
@@ -46,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         answers[k] = v
     df = _read(a.data)
     report = ml.analyze(df, a.target, task=a.task, groups=a.groups, time_col=a.time_col,
-                        holdout=a.holdout or None, answers=answers, verify=a.verify,
+                        holdout=a.holdout, answers=answers, verify=a.verify,
                         budget=ml.Budget(max_experiments=a.max_experiments), seed=a.seed)
     report.to_html(a.out, plotlyjs=a.plotlyjs)
     if a.json:

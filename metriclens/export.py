@@ -34,7 +34,9 @@ def _sk():
 def _to_float(X: Any) -> np.ndarray:
     import pandas as pd
 
-    return pd.DataFrame(X).apply(pd.to_numeric, errors="coerce").astype(float).to_numpy()
+    v = pd.DataFrame(X).apply(pd.to_numeric, errors="coerce").astype(float).to_numpy(copy=True)
+    v[~np.isfinite(v)] = np.nan  # +/-inf is treated as missing (see the infinite_values review item)
+    return v
 
 
 def _to_str(X: Any) -> np.ndarray:
@@ -70,6 +72,7 @@ class ExportResult:
     needs_estimator: list[dict[str, str]] = field(default_factory=list)
     unsupported: list[dict[str, str]] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    scaled: bool = True
 
     @property
     def model_kind(self) -> str:
@@ -83,7 +86,9 @@ class ExportResult:
     def describe(self) -> str:
         lines = ["EXPORTED MODEL RECIPE", f"model: {self.model_kind}",
                  f"features: {len(self.feature_columns)} columns", f"cv: {self.cv!r}",
-                 f"scoring: {list(self.scoring)}"]
+                 f"scoring: {list(self.scoring)}",
+                 "estimator-dependent default: " + ("StandardScaler on numeric features (scale=False to turn off)"
+                                                    if self.scaled else "no feature scaling (scale=False)")]
         if self.groups:
             lines.append(f"groups: pass groups=df['{self.groups}'] to cross_validate")
         if self.sort_by:
@@ -154,7 +159,7 @@ def feature_plan(p: DataProfile, steps: list[Step]) -> dict[str, list[str]]:
     }
 
 
-def build_preprocessor(p: DataProfile, steps: list[Step]) -> tuple[Any, list[str]]:
+def build_preprocessor(p: DataProfile, steps: list[Step], scale: bool = True) -> tuple[Any, list[str]]:
     _sk()
     from sklearn.compose import ColumnTransformer
     from sklearn.impute import SimpleImputer
@@ -172,9 +177,11 @@ def build_preprocessor(p: DataProfile, steps: list[Step]) -> tuple[Any, list[str
     tx = []
     if plan["numeric"]:
         ind = bool(missing & set(plan["numeric"]))
-        tx.append(("num", Pipeline([("to_float", FunctionTransformer(_to_float)),
-                                    ("impute", SimpleImputer(strategy="median", add_indicator=ind)),
-                                    ("scale", StandardScaler())]), plan["numeric"]))
+        num_steps: list[tuple[str, Any]] = [("to_float", FunctionTransformer(_to_float)),
+                                            ("impute", SimpleImputer(strategy="median", add_indicator=ind))]
+        if scale:
+            num_steps.append(("scale", StandardScaler()))
+        tx.append(("num", Pipeline(num_steps), plan["numeric"]))
     if plan["power"]:
         ind = bool(missing & set(plan["power"]))
         tx.append(("power", Pipeline([("to_float", FunctionTransformer(_to_float)),
@@ -205,13 +212,13 @@ def proxy_estimators(task: Task) -> list[tuple[str, Any]]:
     return [("linear_proxy", Ridge()), ("tree_proxy", HistGradientBoostingRegressor(random_state=0))]
 
 
-def build_model(p: DataProfile, steps: list[Step], estimator: Any) -> Any:
+def build_model(p: DataProfile, steps: list[Step], estimator: Any, scale: bool = True) -> Any:
     """Preprocessor + estimator, with estimator-level steps applied."""
     from sklearn.base import clone
     from sklearn.compose import TransformedTargetRegressor
     from sklearn.pipeline import Pipeline
 
-    pre, _ = build_preprocessor(p, steps)
+    pre, _ = build_preprocessor(p, steps, scale=scale)
     est = clone(estimator)
     for s in steps:
         if s.kind == "class_weight":
@@ -263,11 +270,13 @@ def build_cv(step: Step | None) -> Any:
 # Export
 # --------------------------------------------------------------------------- #
 
-def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported: bool = False) -> ExportResult:
+def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported: bool = False,
+                    scale: bool = True) -> ExportResult:
     _sk()
     from sklearn.pipeline import Pipeline
 
-    p = report.profile
+    p = report.details.profile
+    ctx = report.details.context
     included, excluded, needs_est, steps = [], [], [], []
     cv_step = None
     for d in report.decisions:
@@ -288,13 +297,13 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
             steps.append(d.step)
             included.append({"id": d.id, "title": d.title})
 
-    pre, cols = build_preprocessor(p, steps)
+    pre, cols = build_preprocessor(p, steps, scale=scale)
     preprocessor = Pipeline([("preprocess", pre)])
-    model = build_model(p, steps, estimator) if estimator is not None else None
+    model = build_model(p, steps, estimator, scale=scale) if estimator is not None else None
 
     plan = report.metric_plan
     pos = positive_label(p, plan.positive_label)
-    names = list(dict.fromkeys(plan.primary + plan.report_alongside + ([plan.dev_metric] if plan.dev_metric else [])))
+    names = list(dict.fromkeys([*plan.primary, *plan.report_alongside, *([plan.dev_metric] if plan.dev_metric else [])]))
     scoring = {n: build_scorer(n, p, pos) for n in names}
 
     from .enums import ColumnKind
@@ -303,7 +312,7 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
                    if cp.kind in (ColumnKind.DATETIME, ColumnKind.TEXT)
                    or (cp.kind is ColumnKind.ID_LIKE and not cp.dtype.startswith(("int", "uint", "Int", "UInt")))]
     assumptions = []
-    if p.task_inferred and report.context.answers.get("q.task") is None:
+    if p.task_inferred and ctx.answers.get("q.task") is None:
         assumptions.append(f"task inferred as {p.task.value} (unconfirmed)")
     if plan.dev_metric_provisional:
         assumptions.append("metric priority unanswered; scoring is a provisional reporting set")
@@ -314,6 +323,6 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
             assumptions.append(f"review item open: {d.title}")
     return ExportResult(
         model=model, preprocessor=preprocessor, cv=build_cv(cv_step), scoring=scoring, feature_columns=cols,
-        groups=report.context.groups if report.context.groups not in (None, "<array>") else None,
-        sort_by=report.context.time_col, included=included, excluded=excluded, needs_estimator=needs_est,
-        unsupported=unsupported, assumptions=assumptions)
+        groups=ctx.groups if ctx.groups not in (None, "<array>") else None,
+        sort_by=ctx.time_col, included=included, excluded=excluded, needs_estimator=needs_est,
+        unsupported=unsupported, assumptions=assumptions, scaled=scale)

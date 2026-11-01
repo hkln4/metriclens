@@ -42,6 +42,43 @@ First release of the decision-driven design. Replaces the v0 `Roadmap` API.
 - CLI: `metriclens report data.csv --target y`.
 - CI (ruff, mypy, pytest with coverage, HTML smoke test).
 
+### Changed (pre-release API round)
+- Data partitions are explicit: `ml.split(df, target, test_size, strategy)` is the
+  primary path; `analyze` defaults to `holdout=None` and only sets a holdout aside
+  when asked (`holdout=0.2`). `report.split()` became `report.holdout(df)`, which
+  re-derives that partition and never splits anew.
+- Fingerprints: `verify`, `holdout` and `register_external_holdout(dev_df=...)`
+  check the frame against SHA-256 digests (column schema, dtypes, index, target,
+  row-order-sensitive content) of the frame passed to `analyze`, and explain
+  any mismatch (reordered, changed, shorter, different columns).
+- `report.register_external_holdout(test_df, dev_df=...)` records an evaluation
+  partition (metadata only, never profiled) and counts exact row overlap with
+  the development data, reported as a review item without a leakage verdict.
+- Deep immutability: all report models are frozen, lists are tuples and dicts
+  read-only; every change is a new revision. `ml.load_report()` reloads JSON.
+- API surface: reading / flow / automation on `Report`, internals under
+  `report.details` (findings, evidence, profile, figures, manifest, context,
+  limitations, rule_track_record, llm). Short reprs for all report objects,
+  a notebook summary card, and `report.decisions_table()`. v0 aliases removed.
+- Split columns (`groups`, `time_col`) stay out of the features unless
+  `split_columns_as_features=True`, which raises a warning.
+- HTML report rebuilt: Summary / Actions / Roadmap / Details navigation, short
+  decision cards (why with the decisive number, do, experiment summary, at most
+  one figure) with evidence, experiment, figure and rule/benchmark details in
+  collapsed sections, consecutive roadmap numbering, collapsed Details section.
+- Verification and baselines use the export splitter (repeated for power).
+- Feature scaling is an export option (`scale=True`), not part of the
+  procedural fit-in-fold decision.
+- Bootstrap intervals computed on subsampled resamples are rescaled to the full
+  sample size (they were ~sqrt(n/m) times too wide on large data).
+- Single-feature association is a 2-fold cross-validated score.
+- Single-class targets are rejected up front; +/-inf values produce an
+  `infinite_values` review item instead of numpy warnings and are treated as
+  missing by the exported preprocessing; duplicate detection hashes rows
+  directly (much faster on wide data).
+- `benchmarks/run.py` keeps the committed experiment section when run without
+  `--verify`.
+
 ### Changed (pre-release review)
 - Raw datetime / text / string-id columns are a review item ("unsupported in
   v1, may carry signal"), no longer a procedural drop.

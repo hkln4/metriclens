@@ -29,11 +29,11 @@ def _stop(msg: str) -> None:
 
 
 def _finding(report, rule_id):
-    return next((f for f in report.findings if f.rule_id == rule_id), None)
+    return next((f for f in report.details.findings if f.rule_id == rule_id), None)
 
 
 def _evidence(report, finding):
-    return {report.evidence[e].label: report.evidence[e].value for e in finding.evidence_ids}
+    return {report.details.evidence[e].label: report.details.evidence[e].value for e in finding.evidence_ids}
 
 
 def _table(title: str, subtitle: str, rows: list[tuple[str, str, str]],
@@ -157,7 +157,7 @@ def case3() -> dict:
                                 df["target"], cv=cv, scoring="r2").mean()
     gap = (r2_leak - r2_honest) * 100
 
-    corr = report.evidence["ev.col.leaky.pearson"].value
+    corr = report.details.evidence["ev.col.leaky.pearson"].value
     _table(
         "CASE 3 — Target leakage (Diabetes + injected feature)",
         f"rule fired: {fnd.rule_id} [{fnd.severity.value}]  |r|={abs(corr):.4f}",

@@ -6,19 +6,38 @@ Traceability is structural:
 - a Finding cannot exist without at least one Evidence id,
 - a Decision names the findings/evidence it rests on, its class and its status,
 - only some (class, status) pairs are pipeline-eligible (see `Decision.eligible`).
+
+Every model here is deeply immutable (see `metriclens.frozen`). answer / verify /
+interpret / register_external_holdout return a new Report with an incremented
+`details.manifest.revision` and a history entry; the old report is untouched.
+
+Surface:
+- reading:     print(report), to_html, to_markdown, roadmap, pending_questions(),
+               decisions_table(), target, task
+- flow:        answer, verify, export, interpret, holdout, register_external_holdout
+- automation:  decisions, decision(id), questions, experiments, metric_plan,
+               baseline, to_json, llm_payload
+- internals:   report.details.{findings, finding(id), evidence, profile, figures,
+               manifest, context, limitations, rule_track_record, llm}
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import Field, PrivateAttr
 
 from ..enums import DecisionClass, DecisionStatus, Severity, Task, Trigger
+from ..frozen import Frozen
 from ..profiling.profile import DataProfile
 
 
-class Evidence(BaseModel):
+def _short(v: Any, n: int = 60) -> str:
+    s = repr(v) if not isinstance(v, str) else v
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+class Evidence(Frozen):
     """One measured value, how it was measured, and where it is visualized."""
 
     id: str
@@ -26,11 +45,15 @@ class Evidence(BaseModel):
     value: Any
     ci: tuple[float, float] | None = None
     method: str
-    columns: list[str] = Field(default_factory=list)
-    figure_ids: list[str] = Field(default_factory=list)
+    columns: tuple[str, ...] = ()
+    figure_ids: tuple[str, ...] = ()
+
+    def __repr__(self) -> str:
+        ci = f" [{self.ci[0]:.4g}, {self.ci[1]:.4g}]" if self.ci else ""
+        return f"<Evidence {self.label} = {_short(self.value)}{ci}>"
 
 
-class Finding(BaseModel):
+class Finding(Frozen):
     """A rule fired (or nearly fired) on the evidence."""
 
     id: str
@@ -39,43 +62,49 @@ class Finding(BaseModel):
     severity: Severity
     trigger: Trigger
     message: str
-    evidence_ids: list[str] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
     thresholds: dict[str, float] = Field(default_factory=dict)
-    columns: list[str] = Field(default_factory=list)
+    columns: tuple[str, ...] = ()
+
+    def __repr__(self) -> str:
+        near = ", near threshold" if self.trigger is Trigger.UNCERTAIN else ""
+        return f"<Finding {self.severity.value}{near} · {self.rule_id}: {_short(self.message, 90)}>"
 
 
-class Step(BaseModel):
+class Step(Frozen):
     """A concrete pipeline change, applied only if the decision is eligible.
 
-    kinds: drop_columns, power_transform, target_encode, log_target, class_weight
+    kinds: drop_columns, power_transform, target_encode, log_target, class_weight, cv
     """
 
     kind: str
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-class Decision(BaseModel):
+class Decision(Frozen):
     id: str
     title: str
     cls: DecisionClass
     status: DecisionStatus
     stage: str
-    action: str                 # what to do
-    rationale: str              # why
+    action: str                 # what to do (full)
+    rationale: str              # why (full)
+    why_short: str = ""         # one sentence, with the decisive number when there is one
+    do_short: str = ""          # one sentence
     risk: str = ""              # what can go wrong if followed / ignored
     verify_hint: str = ""       # how a user can check it
     rule_id: str = ""
-    finding_ids: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-    figure_ids: list[str] = Field(default_factory=list)
-    experiment_ids: list[str] = Field(default_factory=list)
+    finding_ids: tuple[str, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    figure_ids: tuple[str, ...] = ()
+    experiment_ids: tuple[str, ...] = ()
     question_id: str | None = None
     step: Step | None = None
     trigger: Trigger | None = None
     note: str = ""
 
     def eligible(self, include_proxy_supported: bool = False) -> bool:
-        """Whether this decision's step may enter an exported pipeline."""
+        """Whether this decision's step may enter an exported model recipe."""
         if self.cls is DecisionClass.PROCEDURAL:
             return self.status is DecisionStatus.APPLIED
         if self.cls is DecisionClass.CONTEXTUAL:
@@ -86,36 +115,48 @@ class Decision(BaseModel):
             return include_proxy_supported and self.status is DecisionStatus.SUPPORTED_BY_PROXY
         return False
 
+    def __repr__(self) -> str:
+        return f"<Decision {self.status.value} · {self.cls.value} · {self.title}>"
 
-class Option(BaseModel):
+
+class Option(Frozen):
     value: str
     label: str
     effect: str = ""
 
 
-class Question(BaseModel):
+class Question(Frozen):
     id: str
     text: str
-    options: list[Option]
-    decision_ids: list[str] = Field(default_factory=list)
+    options: tuple[Option, ...]
+    decision_ids: tuple[str, ...] = ()
     answer: str | None = None
     # an LLM may suggest an answer; it is never applied without the user
     suggestion: str | None = None
     suggestion_reason: str | None = None
 
+    def __repr__(self) -> str:
+        state = f"answer={self.answer!r}" if self.answer else "unanswered"
+        sug = f", suggested={self.suggestion!r}" if self.suggestion and not self.answer else ""
+        return f"<Question {self.id[2:]}: {self.text} options={[o.value for o in self.options]} {state}{sug}>"
 
-class MetricPlan(BaseModel):
-    primary: list[str] = Field(default_factory=list)
-    report_alongside: list[str] = Field(default_factory=list)
+
+class MetricPlan(Frozen):
+    primary: tuple[str, ...] = ()
+    report_alongside: tuple[str, ...] = ()
     avoid: dict[str, str] = Field(default_factory=dict)
-    notes: list[str] = Field(default_factory=list)
+    notes: tuple[str, ...] = ()
     # sklearn scorer used for experiments, and whether it is still provisional
     dev_metric: str = ""
     dev_metric_provisional: bool = True
     positive_label: str | None = None
 
+    def __repr__(self) -> str:
+        prov = " (provisional)" if self.dev_metric_provisional else ""
+        return f"<MetricPlan primary={list(self.primary)}{prov} avoid={list(self.avoid)}>"
 
-class Experiment(BaseModel):
+
+class Experiment(Frozen):
     """'Current setup' vs 'current setup + one change', on identical folds."""
 
     id: str
@@ -126,8 +167,9 @@ class Experiment(BaseModel):
     n_rows: int
     n_splits: int
     n_repeats: int
-    baseline_scores: list[float]
-    candidate_scores: list[float]
+    cv: str = ""                     # the splitter actually used
+    baseline_scores: tuple[float, ...]
+    candidate_scores: tuple[float, ...]
     mean_diff: float                 # candidate - baseline, in "higher is better" units
     ci: tuple[float, float] | None = None
     p_value: float | None = None     # None when the split protocol admits no valid test
@@ -143,58 +185,69 @@ class Experiment(BaseModel):
     def fold_diffs(self) -> list[float]:
         return [c - b for b, c in zip(self.baseline_scores, self.candidate_scores)]
 
+    def __repr__(self) -> str:
+        return (f"<Experiment {self.decision_id} · {self.family}: diff {self.mean_diff:+.4g} "
+                f"({self.folds_improved}/{len(self.baseline_scores)} folds better) -> {self.outcome}>")
 
-class FigureSpec(BaseModel):
+
+class FigureSpec(Frozen):
     id: str
     title: str
     what: str                        # what the figure shows
     why: str                         # why it was selected
-    evidence_ids: list[str] = Field(default_factory=list)
-    decision_ids: list[str] = Field(default_factory=list)
+    evidence_ids: tuple[str, ...] = ()
+    decision_ids: tuple[str, ...] = ()
     priority: int = 50               # lower = shown earlier
     plot: dict[str, Any]             # plotly JSON with color tokens ("var:series-1")
     table: dict[str, Any] = Field(default_factory=dict)   # {"columns": [...], "rows": [[...]]}
 
+    def __repr__(self) -> str:
+        return f"<FigureSpec {self.id}: {self.title}>"
 
-class RoadmapStage(BaseModel):
+
+class RoadmapStage(Frozen):
     stage: str
     title: str
-    decision_ids: list[str]
+    decision_ids: tuple[str, ...]
     summary: str
 
+    def __repr__(self) -> str:
+        return f"<RoadmapStage {self.title} · {self.summary}>"
 
-class LLMClaim(BaseModel):
+
+class LLMClaim(Frozen):
     text: str
-    evidence_ids: list[str] = Field(default_factory=list)
-    decision_ids: list[str] = Field(default_factory=list)
+    evidence_ids: tuple[str, ...] = ()
+    decision_ids: tuple[str, ...] = ()
 
 
-class SemanticFlag(BaseModel):
+class SemanticFlag(Frozen):
     column: str
     concern: str
     reason: str
 
 
-class LLMInterpretation(BaseModel):
+class LLMInterpretation(Frozen):
     provider: str
     model: str
     summary: str
-    priorities: list[LLMClaim] = Field(default_factory=list)
-    questions_for_user: list[str] = Field(default_factory=list)
-    semantic_flags: list[SemanticFlag] = Field(default_factory=list)
+    priorities: tuple[LLMClaim, ...] = ()
+    questions_for_user: tuple[str, ...] = ()
+    semantic_flags: tuple[SemanticFlag, ...] = ()
     dropped_claims: int = 0          # claims rejected for citing unknown ids/columns
     disclosure: dict[str, Any] = Field(default_factory=dict)
 
 
-class ContextState(BaseModel):
+class ContextState(Frozen):
     text: str | None = None
     answers: dict[str, str] = Field(default_factory=dict)
     groups: str | None = None        # column name, "<array>", or None
     time_col: str | None = None
     estimator: str | None = None
+    split_columns_as_features: bool = False
 
 
-class Manifest(BaseModel):
+class Manifest(Frozen):
     metriclens_version: str
     python: str
     packages: dict[str, str]
@@ -203,41 +256,27 @@ class Manifest(BaseModel):
     profile_options: dict[str, Any]
     budget: dict[str, Any] | None = None
     benchmark: str | None = None
-    # every step that produced this report version: analyze, answer, verify, interpret
+    # digests of the DataFrame passed to analyze (no data): see metriclens.fingerprint
+    source_fingerprint: dict[str, Any] = Field(default_factory=dict)
+    # metadata of an evaluation partition kept out of the analysis (no data)
+    external_holdout: dict[str, Any] | None = None
+    # every step that produced this report version: analyze, answer, verify, interpret, ...
     revision: int = 0
-    history: list[dict[str, Any]] = Field(default_factory=list)
+    history: tuple[dict[str, Any], ...] = ()
 
 
-class Report(BaseModel):
-    """Everything `analyze` produced. JSON-serializable; holds no raw rows."""
+class ReportDetails(Frozen):
+    """Internals: the traceability chain and reproducibility record behind the decisions."""
 
-    target: str
-    task: Task
-    profile: DataProfile
+    findings: tuple[Finding, ...]
     evidence: dict[str, Evidence]
-    findings: list[Finding]
-    decisions: list[Decision]
-    questions: list[Question]
-    metric_plan: MetricPlan
-    roadmap: list[RoadmapStage]
-    figures: list[FigureSpec]
-    experiments: list[Experiment] = Field(default_factory=list)
-    baseline: dict[str, Any] = Field(default_factory=dict)
-    llm: LLMInterpretation | None = None
-    limitations: list[str] = Field(default_factory=list)
-    context: ContextState
+    profile: DataProfile
+    figures: tuple[FigureSpec, ...]
     manifest: Manifest
+    context: ContextState
+    limitations: tuple[str, ...] = ()
     rule_track_record: dict[str, Any] = Field(default_factory=dict)
-
-    _holdout_positions: Any = PrivateAttr(default=None)
-    _estimator: Any = PrivateAttr(default=None)
-
-    # ---- lookups ---------------------------------------------------------- #
-    def decision(self, decision_id: str) -> Decision:
-        for d in self.decisions:
-            if d.id == decision_id:
-                return d
-        raise KeyError(decision_id)
+    llm: LLMInterpretation | None = None
 
     def finding(self, finding_id: str) -> Finding:
         for f in self.findings:
@@ -245,47 +284,90 @@ class Report(BaseModel):
                 return f
         raise KeyError(finding_id)
 
-    @property
-    def pending_questions(self) -> list[Question]:
-        return [q for q in self.questions if q.answer is None]
+    def __repr__(self) -> str:
+        return (f"<ReportDetails {len(self.findings)} findings, {len(self.evidence)} evidence, "
+                f"{len(self.figures)} figures, revision {self.manifest.revision}>")
 
-    # ---- workflow --------------------------------------------------------- #
+
+class Report(Frozen):
+    """Everything `analyze` produced. JSON-serializable; holds no raw rows."""
+
+    target: str
+    task: Task
+    decisions: tuple[Decision, ...]
+    questions: tuple[Question, ...]
+    metric_plan: MetricPlan
+    roadmap: tuple[RoadmapStage, ...]
+    experiments: tuple[Experiment, ...] = ()
+    baseline: dict[str, Any] = Field(default_factory=dict)
+    details: ReportDetails
+
+    # in-memory only (never serialized): holdout row positions, the estimator,
+    # and per-row hashes of the source frame for precise mismatch messages
+    _holdout_positions: Any = PrivateAttr(default=None)
+    _estimator: Any = PrivateAttr(default=None)
+    _row_hashes: Any = PrivateAttr(default=None)
+
+    # ---- reading ---------------------------------------------------------- #
+    def decision(self, decision_id: str) -> Decision:
+        for d in self.decisions:
+            if d.id == decision_id:
+                return d
+        raise KeyError(decision_id)
+
+    def pending_questions(self) -> tuple[Question, ...]:
+        return tuple(q for q in self.questions if q.answer is None)
+
+    def decisions_table(self) -> Any:
+        """One row per decision, with the decisive evidence resolved (a pandas DataFrame)."""
+        from ..render.tables import decisions_table
+
+        return decisions_table(self)
+
+    # ---- flow ------------------------------------------------------------- #
     def answer(self, answers: dict[str, str]) -> Report:
-        """Return a new report with these question answers applied.
-
-        Contextual decisions are re-derived from the stored profile; earlier
-        experiment results are kept and flagged if the metric changed."""
+        """New revision with these answers applied; contextual decisions are re-derived."""
         from ..api import _apply_answers
 
         return _apply_answers(self, answers)
 
-    def verify(self, df: Any, estimator: Any = None, budget: Any = None) -> Report:
-        """Run the bounded experiments for conditional decisions on the dev rows of `df`."""
+    def verify(self, df: Any, estimator: Any = None, budget: Any = None, groups: Any = None) -> Report:
+        """New revision with bounded experiments for the conditional decisions.
+
+        `df` must be the same DataFrame that was passed to `analyze` (checked by
+        fingerprint); any internal holdout is excluded automatically."""
         from ..api import _verify
 
-        return _verify(self, df, estimator=estimator, budget=budget)
+        return _verify(self, df, estimator=estimator, budget=budget, groups=groups)
 
-    def split(self, df: Any) -> tuple[Any, Any]:
-        """Return (dev_df, holdout_df) exactly as reserved by `analyze`."""
-        import numpy as np
+    def holdout(self, df: Any) -> tuple[Any, Any]:
+        """(dev_df, holdout_df) exactly as reserved by `analyze(..., holdout=...)`.
 
-        if self._holdout_positions is None:
-            raise RuntimeError("Holdout positions are not available (report was loaded from JSON). "
-                               "Re-run ml.analyze with the same data and seed.")
-        hold = np.asarray(self._holdout_positions, dtype=int)
-        mask = np.zeros(len(df), dtype=bool)
-        mask[hold] = True
-        return df.iloc[~mask], df.iloc[mask]
+        Re-derives a partition made before profiling; it never splits anew. `df`
+        must be the DataFrame passed to `analyze` (checked by fingerprint)."""
+        from ..api import _holdout
 
-    def export(self, estimator: Any = None, include_proxy_supported: bool = False) -> Any:
-        """Build the sklearn Pipeline + CV + scoring from eligible decisions only."""
+        return _holdout(self, df)
+
+    def register_external_holdout(self, holdout_df: Any, dev_df: Any = None, name: str = "external holdout") -> Report:
+        """New revision recording an evaluation partition kept out of the analysis.
+
+        Only metadata is stored (rows, columns, digests); the frame is not
+        profiled. With `dev_df` (the frame passed to `analyze`), exact row
+        overlap between the two is counted."""
+        from ..api import _register_external_holdout
+
+        return _register_external_holdout(self, holdout_df, dev_df=dev_df, name=name)
+
+    def export(self, estimator: Any = None, include_proxy_supported: bool = False, scale: bool = True) -> Any:
+        """Model recipe + preprocessor + CV + scoring from eligible decisions only."""
         from ..export import export_pipeline
 
-        return export_pipeline(self, estimator=estimator or self._estimator,
-                               include_proxy_supported=include_proxy_supported)
+        return export_pipeline(self, estimator=estimator if estimator is not None else self._estimator,
+                               include_proxy_supported=include_proxy_supported, scale=scale)
 
     def interpret(self, llm: Any) -> Report:
-        """Add the optional LLM interpretation (see `llm_payload` for what is sent)."""
+        """New revision with the optional LLM interpretation (see `llm_payload`)."""
         from ..llm.interpreter import interpret_report
 
         return interpret_report(self, llm)
@@ -329,24 +411,12 @@ class Report(BaseModel):
     def __str__(self) -> str:
         return self.to_text()
 
-    # ---- v0 compatibility ------------------------------------------------- #
-    @property
-    def recommended_metrics(self) -> dict[str, list[str]]:
-        out: dict[str, list[str]] = {}
-        if self.metric_plan.primary:
-            out["primary"] = list(self.metric_plan.primary)
-        if self.metric_plan.report_alongside:
-            out["secondary"] = list(self.metric_plan.report_alongside)
-        return out
+    def __repr__(self) -> str:
+        from ..render.common import headline, next_step
 
-    @property
-    def avoid(self) -> dict[str, str]:
-        return dict(self.metric_plan.avoid)
+        return f"<metriclens Report r{self.details.manifest.revision}: {headline(self)} Next: {next_step(self)}>"
 
-    @property
-    def validation_strategy(self) -> list[str]:
-        return [d.action for d in self.decisions if d.stage == "split"]
+    def _repr_html_(self) -> str:
+        from ..render.html import summary_card
 
-    @property
-    def preprocessing_notes(self) -> list[str]:
-        return [d.action for d in self.decisions if d.stage in ("preprocessing", "target")]
+        return summary_card(self)

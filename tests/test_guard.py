@@ -55,13 +55,13 @@ def test_holdout_keeps_groups_whole(reg_df):
 def test_small_data_skips_holdout():
     rng = np.random.default_rng(0)
     df = pd.DataFrame({"a": rng.normal(size=150), "y": rng.normal(size=150)})
-    rep = ml.analyze(df, target="y")
-    assert rep.profile.holdout["used"] is False
-    assert rep.decision("d.holdout").title.startswith("No holdout")
+    rep = ml.analyze(df, target="y", holdout=0.2)
+    assert rep.details.profile.holdout["used"] is False
+    assert rep.decision("d.holdout").title == "Metriclens did not reserve an internal holdout"
 
 
 def test_profile_never_sees_holdout_rows(reg_df):
     rep = ml.analyze(reg_df, target="y", holdout=0.25)
-    assert rep.profile.dataset.n_rows == len(reg_df) - rep.profile.holdout["n_holdout"]
-    dev, hold = rep.split(reg_df)
-    assert len(dev) == rep.profile.dataset.n_rows and len(hold) == rep.profile.holdout["n_holdout"]
+    assert rep.details.profile.dataset.n_rows == len(reg_df) - rep.details.profile.holdout["n_holdout"]
+    dev, hold = rep.holdout(reg_df)
+    assert len(dev) == rep.details.profile.dataset.n_rows and len(hold) == rep.details.profile.holdout["n_holdout"]

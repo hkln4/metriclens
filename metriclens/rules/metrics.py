@@ -62,7 +62,8 @@ def natural(scorer: str, value: float | None) -> float | None:
 
 def metric_policy(p: DataProfile, ctx: RuleContext, out: Emitter, finding_ids: set[str]) -> MetricPlan:
     s = p.target.stats
-    plan = MetricPlan()
+    notes: list[str] = []
+    positive_label: str | None = None
     avoid: dict[str, str] = {}
     evs: list[str] = []
     answer = ctx.answers.get(QID)
@@ -78,9 +79,9 @@ def metric_policy(p: DataProfile, ctx: RuleContext, out: Emitter, finding_ids: s
             avoid["accuracy (alone)"] = (f"Always predicting the majority class already scores {maj:.1%}; "
                                          "report it only next to that baseline.")
         if binary:
-            plan.positive_label = s.get("minority_class")
+            positive_label = s.get("minority_class")
             prev = s.get("minority_fraction")
-            plan.notes.append(f"Positive class assumed to be the minority class '{plan.positive_label}' "
+            notes.append(f"Positive class assumed to be the minority class '{positive_label}' "
                               f"(prevalence {prev:.1%}). PR-AUC of a random model equals the prevalence; "
                               "ROC-AUC of a random model is 0.5 regardless of imbalance — report both.")
         default = ("balanced_accuracy" if imbalanced else "accuracy") if binary else (
@@ -104,21 +105,21 @@ def metric_policy(p: DataProfile, ctx: RuleContext, out: Emitter, finding_ids: s
         default = "neg_mean_absolute_error"
         provisional_primary = ["neg_mean_absolute_error", "neg_root_mean_squared_error"]
     else:
-        return plan
+        return MetricPlan()
 
     if answer in table:
         primary, alongside, dev, _ = table[answer]
         status = DecisionStatus.CONFIRMED
-        plan.dev_metric_provisional = False
+        provisional = False
     else:
         primary, alongside, dev = provisional_primary, [], default
         status = DecisionStatus.AWAITING_USER
-        plan.notes.append("Metric priority is unanswered: a broad reporting set is shown and experiments use "
-                          f"{label(default)} provisionally.")
-    plan.primary = list(primary)
-    plan.report_alongside = [m for m in alongside if m not in primary]
-    plan.avoid = avoid
-    plan.dev_metric = dev
+        provisional = True
+        notes.append("Metric priority is unanswered: a broad reporting set is shown and experiments use "
+                     f"{label(default)} provisionally.")
+    plan = MetricPlan(primary=list(primary), report_alongside=[m for m in alongside if m not in primary],
+                      avoid=avoid, notes=notes, dev_metric=dev, dev_metric_provisional=provisional,
+                      positive_label=positive_label)
 
     options = [(k, v[3], "primary: " + ", ".join(label(m) for m in v[0])) for k, v in table.items()]
     d = out.decision("metric", "Choose the metric from the cost of errors", DecisionClass.CONTEXTUAL, "metrics",
@@ -128,9 +129,12 @@ def metric_policy(p: DataProfile, ctx: RuleContext, out: Emitter, finding_ids: s
                      "The data shows which metrics mislead here (see 'avoid'); which one to optimize depends on what "
                      "an error costs, which only you know.",
                      status=status, question_id=QID, evidence_ids=evs,
+                     why="Which metric to optimize depends on what an error costs; the data only says which ones "
+                         "mislead.",
+                     do=("Answer the metric question." if provisional else
+                         "Optimize " + label(plan.primary[0]) + "; report the others alongside."),
                      risk="Optimizing a metric that does not match the real cost produces a model that looks good and "
                           "fails where it matters.")
-    q = out.question("metric_priority", "Which kind of error matters most in your application?", options,
-                     decision_ids=[d.id])
-    q.answer = answer
+    out.question("metric_priority", "Which kind of error matters most in your application?", options,
+                 decision_ids=[d.id], answer=answer)
     return plan

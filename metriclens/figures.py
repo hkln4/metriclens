@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from .enums import ColumnKind, Task
+from .frozen import evolve
 from .profiling.profile import DataProfile
 from .profiling.stats import r
 from .report.model import Decision, Evidence, FigureSpec
@@ -134,13 +135,13 @@ def build_figures(df: pd.DataFrame, p: DataProfile, evidence: dict[str, Evidence
     if assoc:
         names = [c for c, _ in assoc][::-1]
         vals = [a for _, a in assoc][::-1]
-        lay = _layout("held-out score (0 = no signal, 1 = predicts the target alone)", "",
+        lay = _layout("2-fold CV single-feature score (0 = no signal, 1 = predicts the target alone)", "",
                       height=max(220, 26 * len(names) + 70), margin={"l": 140, "r": 16, "t": 16, "b": 48})
         lay["shapes"] = [_threshold_line(0.95)]
         lay["xaxis"]["range"] = [0, 1.02]
         figs.append(FigureSpec(
             id="fig.association", title="How well each feature predicts the target on its own", priority=15,
-            what="Single-feature held-out score per feature (top 20). Dashed line: leakage-hint threshold 0.95.",
+            what="2-fold cross-validated single-feature score per feature (top 20). Dashed line: leakage-hint threshold 0.95.",
             why="A feature near 1.0 alone is the classic signature of target leakage; the ranking also shows "
                 "where signal is.",
             evidence_ids=[e for e in evidence if e.endswith(".association")],
@@ -244,15 +245,23 @@ def build_figures(df: pd.DataFrame, p: DataProfile, evidence: dict[str, Evidence
 
 
 def _link(figs: list[FigureSpec], evidence: dict[str, Evidence], decisions: list[Decision]) -> None:
-    """Back-link figures onto the evidence and decisions they support."""
-    for f in figs:
-        for eid in f.evidence_ids:
-            if eid in evidence and f.id not in evidence[eid].figure_ids:
-                evidence[eid].figure_ids.append(f.id)
-        ev = set(f.evidence_ids)
-        for d in decisions:
-            if (d.id in f.decision_ids or ev & set(d.evidence_ids)) and f.id not in d.figure_ids:
-                d.figure_ids.append(f.id)
+    """Back-link figures onto the evidence and decisions they support.
+
+    Report objects are immutable, so linked copies replace the originals inside
+    the (mutable, builder-owned) `evidence` dict and `decisions` list. A
+    decision's own figures (naming it in decision_ids) come first, so the first
+    figure id is the one shown on its card."""
+    for eid in list(evidence):
+        ids = [f.id for f in figs if eid in f.evidence_ids]
+        new = tuple(dict.fromkeys([*evidence[eid].figure_ids, *ids]))
+        if new != evidence[eid].figure_ids:
+            evidence[eid] = evolve(evidence[eid], figure_ids=new)
+    for i, d in enumerate(decisions):
+        own = [f.id for f in figs if d.id in f.decision_ids]
+        via = [f.id for f in figs if set(f.evidence_ids) & set(d.evidence_ids)]
+        new = tuple(dict.fromkeys([*own, *d.figure_ids, *via]))
+        if new != d.figure_ids:
+            decisions[i] = evolve(d, figure_ids=new)
 
 
 def experiment_figure(decision: Decision, experiments: list[Any]) -> FigureSpec:

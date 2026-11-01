@@ -1,11 +1,17 @@
 """Single-file HTML report.
 
-The unit of the report is the decision card: every card links to the evidence
-it rests on (value, interval, method), the rule version and thresholds, any
-experiment, and the figures that show it. Figures are plotly JSON with color
-tokens resolved from CSS custom properties, so light and dark mode each use their
-own steps; every figure also has a data table, which is what you see if
-plotly.js is unavailable. No raw rows are embedded.
+Reading order: Summary (what this is, how much needs you, the next step) ->
+Actions (what needs your attention, open questions, metrics) -> Roadmap (one
+short card per decision: status, title, one-line why with the decisive number,
+one-line do, experiment summary, at most one figure) -> Details (collapsed:
+evidence, findings, all diagnostics, profile, manifest). Everything that
+explains a decision is one click away inside its card.
+
+Figures are plotly JSON with color tokens resolved from CSS custom properties,
+so light and dark mode each use their own steps. With plotlyjs="cdn" (default)
+the file is a single file but needs internet for the charts; "inline" embeds
+plotly.js for fully offline use. Every figure also has a data table, which is
+what shows when plotly.js is unavailable. No raw rows are embedded.
 """
 
 from __future__ import annotations
@@ -21,18 +27,21 @@ from .common import (
     CLASS_LABEL,
     ICON,
     SEV_TONE,
+    attention,
+    experiment_summary,
     fmt,
     fmt_ci,
     headline,
+    key_evidence,
+    next_step,
     partition_note,
-    priorities,
     status_word,
     summary_counts,
+    task_note,
     tone,
 )
 
 PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js"
-MAIN_FIGURES = 6
 
 
 def esc(x: Any) -> str:
@@ -111,6 +120,15 @@ pre{background:var(--surface-2);padding:10px;border-radius:8px;overflow-x:auto}
 .noplot .plot{display:none}
 .partition{border:1px solid var(--border);border-left:4px solid var(--series-1);border-radius:8px;
 background:var(--surface-2);padding:10px 12px;margin:12px 0;font-size:.92rem}
+.next{font-size:1.02rem;margin:12px 0;padding:10px 12px;border-radius:8px;background:var(--series-1-soft)}
+.card p{margin:4px 0}.card .lbl{color:var(--text-secondary);font-size:.85rem;margin-right:6px}
+.card details{margin:4px 0}.card details>summary{font-size:.88rem}
+.card .plot{min-height:160px;margin:6px 0}
+.attn{list-style:none;padding-left:0}.attn li{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:3px 0}
+.q{border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:10px 0}
+.suggest{border-left:4px solid var(--warning);padding:4px 10px;margin:6px 0;background:var(--surface-2)}
+section.details>details{border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:8px 0}
+section.details>details>summary{font-weight:600;color:var(--text-primary)}
 """
 
 JS = r"""
@@ -134,10 +152,11 @@ JS = r"""
   var specs = JSON.parse(document.getElementById('ml-figures').textContent);
   function draw(){
     if(typeof Plotly==='undefined'){document.body.classList.add('noplot');
-      document.querySelectorAll('.fig details').forEach(function(d){d.open=true;}); return;}
-    Object.keys(specs).forEach(function(id){
-      var el=document.getElementById('plot-'+id); if(!el) return;
-      var s=resolve(specs[id]); var lay=s.layout||{};
+      document.querySelectorAll('.fig details.data').forEach(function(d){d.open=true;}); return;}
+    document.querySelectorAll('.plot[data-fig]').forEach(function(el){
+      if(el.offsetParent===null) return;            // inside a closed <details>: drawn when opened
+      var spec=specs[el.getAttribute('data-fig')]; if(!spec) return;
+      var s=resolve(spec); var lay=s.layout||{};
       lay.paper_bgcolor='rgba(0,0,0,0)'; lay.plot_bgcolor='rgba(0,0,0,0)';
       lay.font={family:'system-ui,-apple-system,Segoe UI,Roboto,sans-serif',size:12,color:css('text-secondary')};
       lay.hoverlabel={bgcolor:css('surface'),bordercolor:css('border'),font:{color:css('text-primary')}};
@@ -146,6 +165,7 @@ JS = r"""
     });
   }
   window.addEventListener('load',draw);
+  document.addEventListener('toggle',function(e){ if(e.target.open) draw(); },true);
   if(window.matchMedia){var m=window.matchMedia('(prefers-color-scheme: dark)');
     if(m.addEventListener) m.addEventListener('change',draw);}
   new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
@@ -181,7 +201,7 @@ def _link(target: str, text: str | None = None) -> str:
     return f'<a href="#{aid(target)}">{esc(text or target)}</a>'
 
 
-def _figure(f: Any) -> str:
+def _figure(f: Any, data_open: bool = False) -> str:
     links = []
     if f.evidence_ids:
         links.append("evidence: " + ", ".join(_link(e) for e in f.evidence_ids))
@@ -190,255 +210,249 @@ def _figure(f: Any) -> str:
     tbl = table(f.table["columns"], f.table["rows"]) if f.table else ""
     return (f'<figure class="fig" id="{aid(f.id)}" style="margin:14px 0"><h3>{esc(f.title)}</h3>'
             f'<p><b>Shows:</b> {esc(f.what)}</p><p><b>Why this figure:</b> {esc(f.why)}</p>'
-            f'<div class="plot" id="plot-{aid(f.id)}" role="img" aria-label="{esc(f.title)}"></div>'
+            f'<div class="plot" data-fig="{aid(f.id)}" role="img" aria-label="{esc(f.title)}"></div>'
             f'<p class="links">{" · ".join(links)}</p>'
-            + (f"<details><summary>Data table</summary>{tbl}</details>" if tbl else "") + "</figure>")
+            + (f'<details class="data"><summary>Data table</summary>{tbl}</details>' if tbl else "") + "</figure>")
 
 
-def _decision_card(r: Any, d: Any) -> str:
+def _evidence_table(r: Any, ids: Any) -> str:
     rows = []
-    for eid in d.evidence_ids:
-        e = r.evidence.get(eid)
+    for eid in ids:
+        e = r.details.evidence.get(eid)
         if e is None:
             continue
-        figs = ", ".join(_link(x) for x in e.figure_ids)
-        rows.append([f'<span id="{aid(eid)}-{aid(d.id)}">{esc(e.label)}</span>', esc(fmt(e.value)),
-                     esc(fmt_ci(e.ci)), esc(e.method), figs])
-    ev_html = table(["evidence", "value", "95% interval", "method", "figures"], rows, raw=True) if rows else ""
-    rule_html = ""
-    findings = [f for f in r.findings if f.id in d.finding_ids]
-    if d.rule_id:
-        ver = r.manifest.rule_versions.get(d.rule_id, "?")
-        thr = "; ".join(f"{k} = {fmt(v)}" for k, v in (findings[0].thresholds if findings else {}).items())
-        tr = r.rule_track_record.get(d.rule_id)
-        trs = (f" · rule detection pass rate on benchmark {esc(r.manifest.benchmark or '?')}: "
-               f"{tr['passed']}/{tr['checks']} checks (known-hazard fixtures; not a real-world accuracy claim)"
-               if tr else "")
-        rule_html = (f'<dt>Rule</dt><dd><code>{esc(d.rule_id)}</code> v{esc(ver)}'
-                     + (f" · thresholds: {esc(thr)}" if thr else "") + f"{trs}</dd>")
-    exp_html = ""
+        rows.append([_link(eid, e.label), esc(fmt(e.value)), esc(fmt_ci(e.ci)), esc(e.method),
+                     ", ".join(_link(x) for x in e.figure_ids)])
+    return table(["evidence", "value", "95% interval", "method", "figures"], rows, raw=True) if rows else ""
+
+
+def _decision_card(r: Any, d: Any, inline_figs: set[str]) -> str:
+    """Short card, open: status, title, why (+ decisive number), do, experiment summary,
+    at most one figure. Everything else sits in closed <details>."""
+    parts = [f'<article class="card" id="{aid(d.id)}" data-decision="{aid(d.id)}"><header>'
+             f"{status_badge(d.status)}{class_badge(d.cls)}<h3>{esc(d.title)}</h3></header>"]
+    ke = key_evidence(r, d)
+    parts.append(f'<p class="why"><span class="lbl">Why</span>{esc(d.why_short)}'
+                 + (f' <span class="muted">({esc(ke)})</span>' if ke else "") + "</p>")
+    parts.append(f'<p class="do"><span class="lbl">Do</span>{esc(d.do_short)}</p>')
+    ex = experiment_summary(r, d)
+    if ex:
+        parts.append(f'<p class="exp"><span class="lbl">Experiment</span>{esc(ex)}</p>')
+    if d.note:
+        parts.append(f'<p class="note"><span class="lbl">Note</span>{esc(d.note)}</p>')
+    if d.question_id and d.status is DecisionStatus.AWAITING_USER:
+        parts.append(f'<p><span class="lbl">Answer</span>{_link(d.question_id, "open question")}</p>')
+
+    main = next((f for f in d.figure_ids if f not in inline_figs), None) if d.figure_ids else None
+    if main is not None:
+        inline_figs.add(main)
+        parts.append(f'<div class="plot" data-fig="{aid(main)}" data-decision="{aid(d.id)}" role="img" '
+                     f'aria-label="{esc(main)}"></div>')
+
+    ev = _evidence_table(r, d.evidence_ids)
+    if ev:
+        parts.append(f'<details class="more"><summary>Show evidence</summary>{ev}</details>')
     exps = [e for e in r.experiments if e.decision_id == d.id]
     if exps:
         erows = [[e.family, e.estimator, label(e.metric), fmt(e.mean_diff), fmt_ci(e.ci), fmt(e.p_adjusted),
-                  fmt(e.min_effect), f"{e.folds_improved}/{len(e.fold_diffs)}", e.outcome] for e in exps]
-        exp_html = ("<dt>Experiment</dt><dd>" + table(["family", "estimator", "metric", "mean diff", "95% CI",
-                                                       "p (Holm)", "practical threshold", "folds improved",
-                                                       "outcome"], erows)
-                    + f'<span class="links">development evidence on dev rows · {esc(exps[0].method)} · '
-                    f'per-fold differences: {_link("fig.exp." + d.id[2:], "figure and table")}</span></dd>')
-    q_html = ""
-    if d.question_id:
-        q = next((q for q in r.questions if q.id == d.question_id), None)
-        if q:
-            opts = "".join(f"<li><code>{esc(o.value)}</code> — {esc(o.label)}"
-                           + (f' <span class="muted">({esc(o.effect)})</span>' if o.effect else "") + "</li>"
-                           for o in q.options)
-            ans = (f"answered: <code>{esc(q.answer)}</code>" if q.answer else
-                   f'answer with <code>report.answer({{"{esc(q.id[2:])}": "&lt;option&gt;"}})</code>')
-            sug = (f'<br><span class="muted">LLM suggestion (not applied): {esc(q.suggestion)} — '
-                   f"{esc(q.suggestion_reason or '')}</span>" if q.suggestion else "")
-            q_html = f"<dt>Question</dt><dd>{esc(q.text)}<ul>{opts}</ul>{ans}{sug}</dd>"
-    figs = " · ".join(_link(f) for f in d.figure_ids)
-    fl = " · ".join(_link(f.id, f.id) for f in findings)
-    parts = [
-        f'<article class="card" id="{aid(d.id)}"><header><h3>{esc(d.title)}</h3>{class_badge(d.cls)}'
-        f"{status_badge(d.status)}</header><dl class=\"kv\">",
-        f"<dt>Do</dt><dd>{esc(d.action)}</dd><dt>Why</dt><dd>{esc(d.rationale)}</dd>",
-        f"<dt>Risk</dt><dd>{esc(d.risk)}</dd>" if d.risk else "",
-        f"<dt>Check</dt><dd>{esc(d.verify_hint)}</dd>" if d.verify_hint else "",
-        f"<dt>Note</dt><dd>{esc(d.note)}</dd>" if d.note else "",
-        f"<dt>Findings</dt><dd>{fl}</dd>" if fl else "",
-        rule_html, exp_html, q_html,
-        f"<dt>Figures</dt><dd>{figs}</dd>" if figs else "",
-        "</dl>", ev_html, "</article>",
-    ]
+                  fmt(e.min_effect), f"{e.folds_improved}/{len(e.fold_diffs)}",
+                  ", ".join(f"{x:+.3g}" for x in e.fold_diffs), e.outcome] for e in exps]
+        parts.append('<details class="more"><summary>Show experiment details</summary>'
+                     + table(["family", "estimator", "metric", "mean diff", "95% CI", "p (Holm)",
+                              "practical threshold", "folds improved", "per-fold differences", "outcome"], erows)
+                     + f'<p class="links">CV: {esc(exps[0].cv)} · {esc(exps[0].method)} Development evidence on '
+                       "the development rows only.</p></details>")
+    others = [f for f in d.figure_ids if f != main]
+    if others:
+        parts.append('<details class="more"><summary>Show related figures</summary><p class="links">'
+                     + " · ".join(_link(f) for f in others) + "</p></details>")
+    rule = []
+    if d.rule_id:
+        fnds = [f for f in r.details.findings if f.id in d.finding_ids]
+        ver = r.details.manifest.rule_versions.get(d.rule_id, "?")
+        thr = "; ".join(f"{k} = {fmt(v)}" for k, v in (fnds[0].thresholds if fnds else {}).items())
+        rule.append(f"<dt>Rule</dt><dd><code>{esc(d.rule_id)}</code> v{esc(ver)}"
+                    + (f" · thresholds: {esc(thr)}" if thr else "") + "</dd>")
+        tr = r.details.rule_track_record.get(d.rule_id)
+        if tr:
+            rule.append(f"<dt>Benchmark</dt><dd>rule detection pass rate on benchmark "
+                        f"{esc(r.details.manifest.benchmark or '?')}: {tr['passed']}/{tr['checks']} checks "
+                        "(known-hazard fixtures; not a real-world accuracy claim)</dd>")
+        if fnds:
+            rule.append("<dt>Findings</dt><dd>" + "; ".join(f"{_link(f.id)} {esc(f.message)}" for f in fnds) + "</dd>")
+            cols = sorted({c for f in fnds for c in f.columns})
+            if cols:
+                rule.append(f"<dt>Columns</dt><dd>{esc(', '.join(cols))}</dd>")
+    rule.append(f"<dt>Full action</dt><dd>{esc(d.action)}</dd><dt>Full reason</dt><dd>{esc(d.rationale)}</dd>")
+    if d.risk:
+        rule.append(f"<dt>Risk</dt><dd>{esc(d.risk)}</dd>")
+    if d.verify_hint:
+        rule.append(f"<dt>Check</dt><dd>{esc(d.verify_hint)}</dd>")
+    rule.append(f'<dt>Class</dt><dd>{esc(CLASS_LABEL[d.cls])}: {esc(CLASS_HELP[d.cls])}</dd>')
+    parts.append('<details class="more"><summary>Show rule and benchmark details</summary><dl class="kv">'
+                 + "".join(rule) + "</dl></details></article>")
     return "".join(parts)
 
 
-def _main_figure_ids(r: Any) -> set[str]:
-    important = {f.id for f in r.findings if f.severity in (Severity.WARN, Severity.CRITICAL)}
-    keep = []
-    for f in r.figures:
-        linked = [d for d in r.decisions if f.id in d.figure_ids]
-        if f.id in ("fig.target",) or f.id.startswith("fig.exp.") or any(set(d.finding_ids) & important for d in linked):
-            keep.append(f.id)
-    return set(keep[:MAIN_FIGURES])
+def _question(q: Any) -> str:
+    opts = "".join(f"<li><code>{esc(o.value)}</code> — {esc(o.label)}"
+                   + (f' <span class="muted">({esc(o.effect)})</span>' if o.effect else "") + "</li>"
+                   for o in q.options)
+    sug = ""
+    if q.suggestion:
+        sug = (f'<div class="suggest"><b>Suggested (awaiting your confirmation):</b> <code>{esc(q.suggestion)}</code>'
+               f" — {esc(q.suggestion_reason or '')} <span class=\"muted\">(LLM interpretation; not applied)</span>"
+               "</div>")
+    dl = " · ".join(_link(x, "decision") for x in q.decision_ids)
+    return (f'<div class="q" id="{aid(q.id)}"><b>{esc(q.text)}</b> <span class="links">{dl}</span><ul>{opts}</ul>'
+            f'{sug}<code>report = report.answer({{"{esc(q.id[2:])}": "&lt;option&gt;"}})</code></div>')
+
+
+def summary_card(r: Any) -> str:
+    """Compact HTML for notebooks (Report._repr_html_): no plots, no details."""
+    c = summary_counts(r)
+    att = "".join(f"<li>{status_badge(d.status)} {esc(d.title)}</li>" for d in attention(r)[:8])
+    return (f'<div style="font:14px/1.5 system-ui,sans-serif;border:1px solid #ccc;border-radius:10px;padding:12px">'
+            f"<b>metriclens report · {esc(r.target)}</b> (revision {r.details.manifest.revision})<br>"
+            f"{esc(headline(r))}<br><b>Next step:</b> {esc(next_step(r))}"
+            + (f"<br><b>Needs your attention</b><ul style='margin:4px 0'>{att}</ul>" if att else "")
+            + f"<span style='color:#666'>{c['questions']} open question(s) · print(report) for the roadmap · "
+              "report.decisions_table() · report.to_html(path)</span></div>")
 
 
 def report_body(r: Any) -> tuple[str, dict[str, Any]]:
-    p = r.profile
+    p = r.details.profile
     c = summary_counts(r)
-    figs = {f.id: f.plot for f in r.figures}
-    chips = [f"{p.dataset.n_rows:,} dev rows", f"{p.dataset.n_features} features",
-             f"task: {r.task.value}" + (" (inferred)" if p.task_inferred else "")]
-    if p.holdout.get("used"):
-        chips.append(f"holdout: {p.holdout['n_holdout']:,} rows, {p.holdout['method']}")
-    else:
-        chips.append("no holdout")
-    if p.sampling.get("sampled"):
-        chips.append(f"profiled a seeded sample of {p.sampling['n_rows']:,} rows")
-    if r.context.groups:
-        chips.append(f"groups: {r.context.groups}")
-    if r.context.time_col:
-        chips.append(f"time: {r.context.time_col}")
+    figs = {f.id: f.plot for f in r.details.figures}
+    ctx = r.details.context
+    chips = [f"target: {r.target}", f"task: {r.task.value}" + task_note(r),
+             f"{p.dataset.n_rows:,} development rows", f"{p.dataset.n_features} features"]
+    if ctx.groups:
+        chips.append(f"groups: {ctx.groups}")
+    if ctx.time_col:
+        chips.append(f"time: {ctx.time_col}")
 
-    out = [f'<header><h1>metriclens report · {esc(r.target)}</h1>'
-           f'<p class="sub">{esc(headline(r))}</p><div class="chips">'
+    out = [f'<section id="summary"><h1>metriclens report · {esc(r.target)}</h1><div class="chips">'
            + "".join(f'<span class="chip">{esc(x)}</span>' for x in chips) + "</div>"
-           + f'<div class="partition" role="note"><b>Data partition.</b> {esc(partition_note(r))}</div></header>']
+           + '<div class="tiles">'
+           f'<div class="tile"><b>{c["questions"]}</b><span>questions awaiting your answer</span></div>'
+           f'<div class="tile"><b>{c["critical_or_review"]}</b><span>critical or review decisions</span></div>'
+           "</div>"
+           f'<p class="next"><b>Next step:</b> {esc(next_step(r))}</p>'
+           f'<div class="partition" role="note"><b>Data partition.</b> {esc(partition_note(r))}</div></section>']
 
-    # executive summary
-    out.append('<section id="summary"><h2>Executive summary</h2><div class="tiles">'
-               f'<div class="tile"><b>{c["applied"]}</b><span>applied / confirmed / verified</span></div>'
-               f'<div class="tile"><b>{c["awaiting"]}</b><span>awaiting your answer</span></div>'
-               f'<div class="tile"><b>{c["review"]}</b><span>to review by hand</span></div>'
-               f'<div class="tile"><b>{c["conditional"]}</b><span>conditional (testable)</span></div>'
-               f'<div class="tile"><b>{c["critical"]}</b><span>critical findings</span></div></div>')
-    pr = priorities(r)
-    if pr:
-        out.append("<h3>Needs your attention</h3><ul>" + "".join(
-            f"<li>{status_badge(d.status)} {_link(d.id, d.title)}</li>" for d in pr) + "</ul>")
-    out.append("</section>")
-
-    # roadmap
-    dmap = {d.id: d for d in r.decisions}
-    out.append('<section id="roadmap"><h2>Roadmap</h2><p class="sub">Ordered steps from split to final '
-               "evaluation. Only applied, confirmed or verified steps enter the exported pipeline.</p>")
-    for st in r.roadmap:
-        items = "".join(f"<li>{class_badge(dmap[i].cls)}{status_badge(dmap[i].status)} {_link(i, dmap[i].title)}</li>"
-                        for i in st.decision_ids)
-        out.append(f'<div class="stage"><h3>{esc(st.title)} <span class="muted">· {esc(st.summary)}</span></h3>'
-                   f"<ul>{items}</ul></div>")
-    out.append("</section>")
-
-    # questions
-    if r.pending_questions:
-        snippet = ", ".join(f'"{q.id[2:]}": "<option>"' for q in r.pending_questions[:3])
-        out.append('<section id="questions"><h2>Questions for you</h2><p class="sub">Contextual decisions stay out '
-                   "of the pipeline until you answer. Answers re-derive the decisions from the stored profile.</p><ul>"
-                   + "".join(f"<li>{_link(q.decision_ids[0] if q.decision_ids else q.id, q.text)} "
-                             f'<span class="muted">({", ".join(esc(o.value) for o in q.options)})</span></li>'
-                             for q in r.pending_questions)
-                   + f"</ul><pre>report = report.answer({{{esc(snippet)}}})</pre></section>")
-
-    # metrics
+    # actions
+    act = ['<section id="actions"><h2>Actions</h2>']
+    att = attention(r)
+    if att:
+        act.append("<h3>Needs your attention</h3><ul class=\"attn\">" + "".join(
+            f"<li>{status_badge(d.status)} {_link(d.id, d.title)}</li>" for d in att) + "</ul>")
+    else:
+        act.append("<p>Nothing needs your attention right now.</p>")
+    pq = r.pending_questions()
+    if pq:
+        act.append(f"<h3>Questions ({len(pq)})</h3><p class=\"sub\">Contextual decisions stay out of the model recipe "
+                   "until you answer. Answers re-derive the decisions from the stored profile and create a new "
+                   "revision.</p>" + "".join(_question(q) for q in pq))
     mp = r.metric_plan
-    out.append('<section id="metrics"><h2>Metrics</h2><dl class="kv">'
+    act.append("<h3>Metrics</h3><dl class=\"kv\">"
                f"<dt>Optimize</dt><dd>{esc(', '.join(label(m) for m in mp.primary))}"
                + (' <span class="muted">(provisional until you answer)</span>' if mp.dev_metric_provisional else "")
                + "</dd>"
                + (f"<dt>Alongside</dt><dd>{esc(', '.join(label(m) for m in mp.report_alongside))}</dd>"
                   if mp.report_alongside else "")
                + "".join(f"<dt>Avoid</dt><dd><b>{esc(m)}</b> — {esc(w)}</dd>" for m, w in mp.avoid.items())
-               + "".join(f"<dt>Note</dt><dd>{esc(n)}</dd>" for n in mp.notes) + "</dl>")
+               + "</dl>")
     b = r.baseline
     if b.get("families"):
         mt = b["metric"]
         rows = [["dummy", "prior / median", fmt(natural(mt, b.get("dummy", {}).get("mean"))),
                  fmt(b.get("dummy", {}).get("std"))]]
         rows += [[k, v["estimator"], fmt(natural(mt, v["mean"])), fmt(v["std"])] for k, v in b["families"].items()]
-        out.append(f"<h3>Baseline ({esc(label(b['metric']))}, {b['n_folds']} folds on {b['n_rows']:,} dev rows)</h3>"
-                   + table(["model", "estimator", "mean", "std"], rows))
-    out.append("</section>")
-
-    # decisions
-    out.append('<section id="decisions"><h2>Decisions</h2><p class="sub">Each card: what to do, why, the evidence '
-               "(value, interval, method), the rule version and thresholds, and any experiment.</p>")
-    for st in r.roadmap:
-        out.append(f"<h3 style=\"margin-top:20px\">{esc(st.title)}</h3>")
-        out += [_decision_card(r, dmap[i]) for i in st.decision_ids]
-    out.append("</section>")
-
-    # figures
-    main = _main_figure_ids(r)
-    out.append('<section id="figures"><h2>Visual diagnostics</h2><p class="sub">Selected by applicability and '
-               "importance; each figure says what it shows and which evidence it supports.</p>")
-    out += [_figure(f) for f in r.figures if f.id in main]
-    rest = [f for f in r.figures if f.id not in main]
-    if rest:
-        out.append(f"<details><summary>All diagnostics ({len(rest)} more)</summary>"
-                   + "".join(_figure(f) for f in rest) + "</details>")
-    out.append("</section>")
-
-    # findings & evidence
-    frows = []
-    for f in r.findings:
-        frows.append([sev_badge(f.severity, f.trigger.value == "uncertain"),
-                      f'<span id="{aid(f.id)}">{esc(f.message)}</span>',
-                      ", ".join(_link(e) for e in f.evidence_ids),
-                      f"<code>{esc(f.rule_id)}</code> v{esc(f.rule_version)}",
-                      esc("; ".join(f"{k}={fmt(v)}" for k, v in f.thresholds.items()))])
-    out.append('<section id="findings"><h2>Findings</h2>'
-               + (table(["severity", "finding", "evidence", "rule", "thresholds"], frows, raw=True) if frows
-                  else "<p>No rule fired.</p>") + "</section>")
-    erows = [[f'<span id="{aid(e.id)}"><code>{esc(e.id)}</code></span>', esc(e.label), esc(fmt(e.value)),
-              esc(fmt_ci(e.ci)), esc(e.method), ", ".join(_link(x) for x in e.figure_ids)]
-             for e in r.evidence.values()]
-    out.append('<section id="evidence"><h2>Evidence</h2>'
-               + table(["id", "measure", "value", "95% interval", "method", "figures"], erows, raw=True)
-               + "</section>")
-
-    # profile
-    ds = p.dataset
-    out.append('<section id="profile"><h2>Dataset profile</h2>' + table(["measure", "value"], [
-        ["rows passed in", ds.n_rows_input], ["development rows profiled", ds.n_rows], ["features", ds.n_features],
-        ["column kinds", ds.kind_counts], ["exact duplicate rows", f"{ds.duplicate_rows} ({ds.duplicate_fraction:.2%})"],
-        ["identical features, different target", ds.conflicting_duplicate_groups],
-        ["target missing", f"{p.target.n_missing} ({p.target.missing_fraction:.1%})"],
-        ["task", f"{p.task.value} — {p.target.task_evidence.get('reason', '')}"]]))
-    crow = [[esc(cp.name), esc(cp.kind.value), esc(cp.kind_reason), esc(cp.dtype), esc(f"{cp.missing_fraction:.1%}"),
-             esc(cp.cardinality), esc(fmt(cp.stats.get("skew"))), esc(fmt(cp.association))]
-            for cp in p.columns.values()]
-    out.append(f"<details><summary>All columns ({len(crow)})</summary>"
-               + table(["column", "kind", "why this kind", "dtype", "missing", "distinct", "skew", "single-feature score"],
-                       crow, raw=True) + "</details></section>")
-
-    # llm
-    if r.llm:
-        L = r.llm
-        dis = L.disclosure
-        out.append('<section id="llm"><h2>Optional interpretation · LLM</h2><div class="llm">'
-                   f'<p class="sub">Written by {esc(L.provider)} / {esc(L.model)} from the computed report only. '
-                   "It cannot change any decision; every claim below cites existing evidence or decision ids. "
-                   f"{L.dropped_claims} claim(s) were dropped for citing unknown ids.</p>"
-                   f"<p>{esc(L.summary)}</p>")
+        act.append(f"<details class=\"more\"><summary>Baseline ({esc(label(mt))}, {esc(b['cv'])}, "
+                   f"{b['n_rows']:,} dev rows)</summary>" + table(["model", "estimator", "mean", "std"], rows)
+                   + "</details>")
+    L = r.details.llm
+    if L:
+        act.append('<h3>Optional interpretation · LLM</h3><div class="llm">'
+                   f'<p class="sub">Written by {esc(L.provider)} / {esc(L.model)} from the computed report only. It '
+                   "cannot change any decision; every claim cites existing evidence or decision ids. "
+                   f"{L.dropped_claims} claim(s) were dropped for citing unknown ids.</p><p>{esc(L.summary)}</p>")
         if L.priorities:
-            out.append("<ul>" + "".join(f"<li>{esc(cl.text)} <span class=\"links\">"
+            act.append("<ul>" + "".join(f"<li>{esc(cl.text)} <span class=\"links\">"
                                         + ", ".join(_link(x) for x in cl.evidence_ids + cl.decision_ids)
                                         + "</span></li>" for cl in L.priorities) + "</ul>")
         if L.semantic_flags:
-            out.append("<h3>Semantic flags · manual review required</h3><ul>" + "".join(
+            act.append("<p><b>Semantic flags · manual review required</b></p><ul>" + "".join(
                 f"<li><b>{esc(s.column)}</b>: {esc(s.concern)} — {esc(s.reason)}</li>" for s in L.semantic_flags)
                 + "</ul>")
-        if L.questions_for_user:
-            out.append("<h3>Questions the LLM suggests asking</h3><ul>"
-                       + "".join(f"<li>{esc(q)}</li>" for q in L.questions_for_user) + "</ul>")
-        out.append("<details><summary>What was sent</summary>"
-                   + table(["field", "value"], [[k, v] for k, v in dis.items()]) + "</details></div></section>")
+        act.append("<details class=\"more\"><summary>What was sent</summary>"
+                   + table(["field", "value"], [[k, v] for k, v in L.disclosure.items()]) + "</details></div>")
+    act.append("</section>")
+    out += act
 
-    out.append('<section id="limitations"><h2>Limitations</h2><ul>'
-               + "".join(f"<li>{esc(x)}</li>" for x in r.limitations) + "</ul></section>")
-    m = r.manifest
-    out.append('<section id="manifest"><h2>Reproducibility</h2><details><summary>Manifest</summary>'
+    # roadmap: short cards, consecutive stage numbers
+    inline: set[str] = set()
+    out.append('<section id="roadmap"><h2>Roadmap</h2><p class="sub">Ordered from split to final evaluation. '
+               "Only applied, confirmed or verified steps enter the exported model recipe.</p>")
+    for st in r.roadmap:
+        out.append(f'<h3 style="margin-top:22px">{esc(st.title)} <span class="muted">· {esc(st.summary)}</span></h3>')
+        out += [_decision_card(r, r.decision(i), inline) for i in st.decision_ids]
+    out.append("</section>")
+
+    # details: limitations visible, everything else collapsed
+    d = r.details
+    out.append('<section id="details" class="details"><h2>Details</h2><h3>Limitations</h3><ul>'
+               + "".join(f"<li>{esc(x)}</li>" for x in d.limitations) + "</ul>")
+    rest = [f for f in d.figures if f.id not in inline]
+    out.append(f"<details id=\"all-diagnostics\"><summary>All diagnostics ({len(d.figures)} figures)</summary>"
+               + "".join(_figure(f) for f in d.figures) + "</details>" if d.figures else "")
+    del rest
+    frows = [[sev_badge(f.severity, f.trigger.value == "uncertain"), f'<span id="{aid(f.id)}">{esc(f.message)}</span>',
+              ", ".join(_link(e) for e in f.evidence_ids), f"<code>{esc(f.rule_id)}</code> v{esc(f.rule_version)}",
+              esc("; ".join(f"{k}={fmt(v)}" for k, v in f.thresholds.items()))] for f in d.findings]
+    out.append(f"<details id=\"findings\"><summary>Findings ({len(frows)})</summary>"
+               + (table(["severity", "finding", "evidence", "rule", "thresholds"], frows, raw=True) if frows
+                  else "<p>No rule fired.</p>") + "</details>")
+    erows = [[f'<span id="{aid(e.id)}"><code>{esc(e.id)}</code></span>', esc(e.label), esc(fmt(e.value)),
+              esc(fmt_ci(e.ci)), esc(e.method), ", ".join(_link(x) for x in e.figure_ids)]
+             for e in d.evidence.values()]
+    out.append(f"<details id=\"evidence\"><summary>Evidence ({len(erows)})</summary>"
+               + table(["id", "measure", "value", "95% interval", "method", "figures"], erows, raw=True)
+               + "</details>")
+    ds = p.dataset
+    crow = [[esc(cp.name), esc(cp.kind.value), esc(cp.kind_reason), esc(cp.dtype), esc(f"{cp.missing_fraction:.1%}"),
+             esc(cp.cardinality), esc(fmt(cp.stats.get("skew"))), esc(fmt(cp.association))]
+            for cp in p.columns.values()]
+    out.append("<details id=\"profile\"><summary>Dataset profile</summary>" + table(["measure", "value"], [
+        ["rows passed to analyze", ds.n_rows_input], ["development rows profiled", ds.n_rows],
+        ["features", ds.n_features], ["column kinds", ds.kind_counts],
+        ["exact duplicate rows", f"{ds.duplicate_rows} ({ds.duplicate_fraction:.2%})"],
+        ["identical features, different target", ds.conflicting_duplicate_groups],
+        ["target missing", f"{p.target.n_missing} ({p.target.missing_fraction:.1%})"],
+        ["task", f"{p.task.value} — {p.target.task_evidence.get('reason', '')}"]])
+        + "<h3>All columns</h3>"
+        + table(["column", "kind", "why this kind", "dtype", "missing", "distinct", "skew",
+                 "single-feature 2-fold CV score"], crow, raw=True) + "</details>")
+    m = d.manifest
+    out.append("<details id=\"manifest\"><summary>Manifest and history</summary>"
                + table(["field", "value"], [["metriclens", m.metriclens_version], ["python", m.python],
                                             ["packages", m.packages], ["seed", m.seed],
                                             ["rule versions", m.rule_versions], ["profile options", m.profile_options],
                                             ["budget", m.budget], ["benchmark manifest", m.benchmark],
-                                            ["revision", m.revision]])
+                                            ["source fingerprint", m.source_fingerprint],
+                                            ["external holdout", m.external_holdout], ["revision", m.revision]])
                + "<h3>History</h3>" + table(["revision", "step", "details"],
                                              [[h_["revision"], h_["action"],
                                                {k: v for k, v in h_.items() if k not in ("revision", "action")}]
-                                              for h_ in m.history])
-               + "</details></section>")
+                                              for h_ in m.history]) + "</details></section>")
     return "".join(out), figs
 
 
-NAV = [("summary", "Summary"), ("roadmap", "Roadmap"), ("questions", "Questions"), ("metrics", "Metrics"),
-       ("decisions", "Decisions"), ("figures", "Figures"), ("findings", "Findings"), ("evidence", "Evidence"),
-       ("profile", "Profile"), ("review", "Review"), ("llm", "LLM"), ("limitations", "Limitations")]
+NAV = [("summary", "Summary"), ("actions", "Actions"), ("roadmap", "Roadmap"), ("details", "Details")]
 
 
-def shell(title: str, body: str, figures: dict[str, Any], plotlyjs: str, present: set[str]) -> str:
+def shell(title: str, body: str, figures: dict[str, Any], plotlyjs: str, nav: list[tuple[str, str]] | None = None) -> str:
     if plotlyjs == "cdn":
         script = f'<script src="{PLOTLY_CDN}" charset="utf-8"></script>'
     elif plotlyjs == "inline":
@@ -451,24 +465,20 @@ def shell(title: str, body: str, figures: dict[str, Any], plotlyjs: str, present
         script = ""
     else:
         raise ValueError("plotlyjs must be 'cdn', 'inline' or 'none'.")
-    nav = "".join(f'<a href="#{k}">{v}</a>' for k, v in NAV if k in present)
+    nav_html = "".join(f'<a href="#{k}">{v}</a>' for k, v in (nav if nav is not None else NAV))
     data = json.dumps(figures, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{esc(title)}</title><style>{CSS}</style>{script}</head><body><main>"
-            f"<nav aria-label=\"sections\">{nav}</nav>{body}</main>"
+            f"<nav aria-label=\"sections\">{nav_html}</nav>{body}</main>"
             f'<script type="application/json" id="ml-figures">{data}</script><script>{JS}</script></body></html>')
-
-
-def _present(body: str) -> set[str]:
-    return {k for k, _ in NAV if f'id="{k}"' in body}
 
 
 def render_report_html(r: Any, review: Any = None, plotlyjs: str = "cdn") -> str:
     body, figs = report_body(r)
     if review is not None:
         rb, rf = review.html_section()
-        idx = body.index('<section id="limitations">')
+        idx = body.index('<section id="details"')
         body = body[:idx] + rb + body[idx:]
         figs.update(rf)
-    return shell(f"metriclens · {r.target}", body, figs, plotlyjs, _present(body))
+    return shell(f"metriclens · {r.target}", body, figs, plotlyjs)

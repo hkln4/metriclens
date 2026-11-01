@@ -17,11 +17,11 @@ NAMES = ["imbalanced", "skewed_target", "leaky_categorical_classification", "dat
 def _snapshot(rep):
     return {
         "task": rep.task.value,
-        "findings": [[f.id, f.severity.value, f.trigger.value] for f in rep.findings],
+        "findings": [[f.id, f.severity.value, f.trigger.value] for f in rep.details.findings],
         "decisions": [[d.id, d.cls.value, d.status.value, d.stage] for d in rep.decisions],
         "questions": [q.id for q in rep.questions],
         "metric_plan": [rep.metric_plan.primary, rep.metric_plan.dev_metric],
-        "figures": [f.id for f in rep.figures],
+        "figures": [f.id for f in rep.details.figures],
         "roadmap": [[s.stage, s.decision_ids] for s in rep.roadmap],
     }
 

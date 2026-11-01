@@ -82,32 +82,97 @@ def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
         why = "standard shuffled k-fold"
     if small and not ctx.time_col and not ctx.groups:
         why += f"; repeated because {n} rows give noisy single-split estimates"
+    spec = f"{name}({', '.join(f'{a}={b}' for a, b in params.items())})"
+    if ctx.time_col or ctx.groups or name.startswith("Repeated"):
+        verif = f"Verification experiments and baselines use the same splitter ({spec})."
+    else:
+        verif = (f"Verification experiments and baselines use the same splitter repeated "
+                 f"{ctx.n_repeats}x (Repeated{name}), for statistical power.")
     out.decision("cv", f"Cross-validate with {name}", DecisionClass.PROCEDURAL, "split",
-                 f"Use {name}({', '.join(f'{a}={b}' for a, b in params.items())}).", why.capitalize() + ".",
+                 f"Use {spec}. {verif}", why.capitalize() + ".",
                  risk=("Without groups or a time column, rows that belong together (same patient, "
                        "same customer, later in time) can still leak across folds."
                        if not (ctx.groups or ctx.time_col) else ""),
-                 evidence_ids=ev, step=Step(kind="cv", params={"name": name, **params}))
+                 evidence_ids=ev, step=Step(kind="cv", params={"name": name, **params}),
+                 do=f"Use {spec}.", why=why.capitalize() + ".")
+    split_cols = [c for c in (ctx.groups if ctx.groups != "<array>" else None, ctx.time_col) if c]
+    if split_cols and not ctx.split_columns_as_features:
+        e = out.ev("columns.split", "Split columns", split_cols, "groups= / time_col= arguments", columns=split_cols)
+        out.decision("split_columns", f"Keep split column(s) {split_cols} out of the features",
+                     DecisionClass.PROCEDURAL, "columns",
+                     f"{split_cols} define the split and are not model features.",
+                     "A column used to define folds encodes which fold a row is in (group identity, position in "
+                     "time); as a feature it lets the model exploit the split itself.",
+                     risk="If one is also a genuine predictor, pass split_columns_as_features=True and review the "
+                          "warning that follows.", evidence_ids=[e],
+                     why="A split column as a feature lets the model exploit the split itself.",
+                     do=f"Exclude {split_cols} from the features.")
+    elif split_cols:
+        e = out.ev("columns.split", "Split columns", split_cols, "groups= / time_col= arguments", columns=split_cols)
+        f = out.finding("split_columns_as_features", Severity.WARN, Trigger.FIRED,
+                        f"{split_cols} are used both to define the split and as features "
+                        "(split_columns_as_features=True).", [e], split_cols)
+        out.decision("split_columns", "Split column(s) also used as features", DecisionClass.REVIEW, "columns",
+                     "Check that the model is not exploiting the split: compare scores with and without these "
+                     "columns.",
+                     "You asked for split columns to be features. A time column used both ways lets the model "
+                     "learn the fold boundaries; a group id lets it memorize groups seen in training.",
+                     finding_ids=[f], evidence_ids=[e])
 
 
-@rule("holdout_policy", "1", description="Keep the holdout out of every decision.")
+@rule("holdout_policy", "2", description="Keep the holdout out of every decision.")
 def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     h = p.holdout
+    ext = ctx.external_holdout
     if h.get("used"):
-        e = out.ev("holdout", "Holdout reserved", f"{h['n_holdout']} rows ({h['method']})",
-                   "reserved before profiling; never seen by rules or experiments")
+        e = out.ev("holdout", "Internal holdout", f"{h['n_holdout']} rows ({h['method']})",
+                   "reserved before profiling; never read by rules or experiments")
         out.decision("holdout", "Evaluate on the holdout once, at the end", DecisionClass.PROCEDURAL,
-                     "final", "Use report.split(df) to get the holdout; score the final model on it once.",
+                     "final", "Use report.holdout(df) to get the holdout; score the final model on it once.",
                      "Every metriclens decision was made on the dev rows only, so the holdout is an "
-                     "unbiased check of the final pipeline.",
+                     "unbiased check of the final model.",
                      risk="Re-using the holdout to choose between models turns it into a second dev set.",
-                     evidence_ids=[e])
+                     evidence_ids=[e], do="Score the final model on report.holdout(df) once, at the end.")
+    elif ext:
+        e = out.ev("holdout", "External holdout (registered)", f"{ext['n_rows']} rows ({ext['name']})",
+                   "registered with report.register_external_holdout; metadata only, never profiled")
+        out.decision("holdout", f"Evaluate on the {ext['name']} once, at the end", DecisionClass.PROCEDURAL,
+                     "final", f"Score the final model on the {ext['name']} once.",
+                     "Metriclens did not reserve an internal holdout; the analysis ran on the frame you passed, "
+                     f"and the registered {ext['name']} ({ext['n_rows']} rows) was kept out of it.",
+                     risk="Re-using it to choose between models turns it into a second dev set.", evidence_ids=[e])
     else:
-        e = out.ev("holdout", "Holdout reserved", "no", h.get("reason", ""))
-        out.decision("holdout", "No holdout: use nested CV for the final estimate", DecisionClass.PROCEDURAL,
-                     "final", "Estimate final performance with nested cross-validation (tuning inside, scoring outside).",
-                     f"No holdout was reserved: {h.get('reason', '')}",
-                     risk="Scores from the same CV used to make decisions are optimistic.", evidence_ids=[e])
+        e = out.ev("holdout", "Internal holdout", "none", h.get("reason", ""))
+        out.decision("holdout", "Metriclens did not reserve an internal holdout", DecisionClass.PROCEDURAL,
+                     "final",
+                     "Keep a test set out of this analysis yourself (ml.split before ml.analyze) and register it with "
+                     "report.register_external_holdout(test_df); without one, estimate final performance with nested "
+                     "cross-validation.",
+                     f"Metriclens did not reserve an internal holdout ({h.get('reason', '')}). If you split off a test "
+                     "set before calling analyze, register it so the report records it.",
+                     risk="Scores from the same CV used to make decisions are optimistic.", evidence_ids=[e],
+                     do="Register your test set, or use nested CV for the final estimate.")
+
+
+@rule("external_holdout_overlap", "1", thresholds={"overlap_rows": 1})
+def external_holdout_overlap(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    ext = ctx.external_holdout
+    if not ext or not ext.get("overlap_rows"):
+        return
+    k = ext["overlap_rows"]
+    e = out.ev("holdout.overlap", f"Rows of the {ext['name']} also present in development", k,
+               f"exact row match on {ext.get('overlap_columns_compared')} shared columns (row hashes)")
+    f = out.finding("external_holdout_overlap", Severity.WARN, Trigger.FIRED,
+                    f"Exact row overlap detected between development and {ext['name']} ({k} rows). This may inflate "
+                    "evaluation; inspect whether the duplicated observations are legitimate repeats.", [e])
+    out.decision("external_holdout_overlap", f"Inspect {k} row(s) shared with the {ext['name']}", DecisionClass.REVIEW,
+                 "final",
+                 "Find out whether the shared rows are the same observation recorded twice (remove them from one "
+                 "side) or legitimate repeats (keep them, and expect a slightly optimistic score).",
+                 f"Exact row overlap detected between development and {ext['name']} ({k} rows). This may inflate "
+                 "evaluation.", finding_ids=[f], evidence_ids=[e],
+                 why=f"{k} row(s) appear in both development and the {ext['name']}.",
+                 do="Inspect whether the duplicated observations are legitimate repeats.")
 
 
 @rule("small_data", "1", thresholds={"warn_rows": 1000, "critical_rows": 200})
@@ -122,7 +187,7 @@ def small_data(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     out.decision("small_data", "Treat small score differences as noise", DecisionClass.REVIEW, "split",
                  "Report the spread across folds and compare models only when the gap exceeds it.",
                  f"With {n} rows a single split's score swings with the random seed.",
-                 finding_ids=[f], evidence_ids=[e])
+                 finding_ids=[f], evidence_ids=[e], why=f"Only {n} development rows: fold-to-fold noise is large.", do="Compare models only when the gap exceeds the fold spread.")
 
 
 @rule("temporal_order", "1", description="Datetime columns exist but no time_col was given.")
@@ -165,7 +230,32 @@ def target_missing(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  "If labels are missing for a reason (e.g. outcome not yet observed), the labelled rows are a "
                  "biased sample and metrics will not transfer.",
                  risk="Selection bias: performance on labelled rows may not match production.",
-                 finding_ids=[f], evidence_ids=[e])
+                 finding_ids=[f], evidence_ids=[e], why=f"{t.n_missing} rows ({t.missing_fraction:.1%}) have no target and are excluded.", do="Check whether unlabelled rows differ systematically from labelled ones.")
+
+
+@rule("infinite_values", "1", thresholds={"inf_count": 1})
+def infinite_values(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    cols = {c: cp.stats.get("inf_count", 0) for c, cp in p.columns.items() if cp.stats.get("inf_count")}
+    t_inf = p.target.stats.get("inf_count", 0) if p.task is REG else 0
+    if not cols and not t_inf:
+        return
+    evs = [out.ev(f"col.{c}.inf", f"Infinite values · {c}", k, "count of +inf / -inf", columns=[c])
+           for c, k in cols.items()]
+    if t_inf:
+        evs.append(out.ev("target.inf", "Infinite target values", t_inf, "count of +inf / -inf",
+                          columns=[p.target.name]))
+    names = list(cols) + ([p.target.name] if t_inf else [])
+    f = out.finding("infinite_values", Severity.WARN, Trigger.FIRED,
+                    f"{len(names)} column(s) contain +/-inf values: {names}. Distribution statistics exclude them.",
+                    evs, names)
+    out.decision("infinite_values", "Decide what the infinite values mean", DecisionClass.REVIEW, "data_review",
+                 "Find out where the infinities come from (often a division by zero) and replace them with a "
+                 "meaningful value or a missing marker before modelling.",
+                 "Infinite values break most estimators; the exported preprocessing treats them as missing (imputed), "
+                 "which may hide a real data problem.",
+                 finding_ids=[f], evidence_ids=evs,
+                 why=f"{len(names)} column(s) contain +/-inf; export treats them as missing.",
+                 do="Trace the source of the infinities and fix them upstream.")
 
 
 @rule("duplicate_rows", "1", thresholds={"warn_fraction": 0.01})
@@ -182,10 +272,10 @@ def duplicate_rows(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     out.decision("duplicate_rows", "Review duplicates before splitting", DecisionClass.REVIEW, "data_review",
                  "Find out whether duplicates are the same real-world record (collection artefact) or legitimate "
                  "repeats." + hint,
-                 "Copies on both sides of a split leak the answer and inflate held-out scores.",
+                 "Copies on both sides of a split leak the answer and inflate validation scores.",
                  risk="Dropping legitimate repeats changes the data distribution; keeping artefacts inflates scores. "
                       "metriclens does not decide this for you.",
-                 finding_ids=[f], evidence_ids=[e])
+                 finding_ids=[f], evidence_ids=[e], why=f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}) can land on both sides of a split.", do="Decide whether they are the same record or legitimate repeats.")
 
 
 @rule("conflicting_duplicates", "1", thresholds={"groups": 1})
@@ -234,7 +324,7 @@ def high_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  "Imputation assumes the missing values resemble the observed ones; that is often false.",
                  risk="If missingness is caused by the target (e.g. a test only ordered for sick patients), the "
                       "indicator itself can be a leak.",
-                 finding_ids=[f], evidence_ids=evs)
+                 finding_ids=[f], evidence_ids=evs, why=f"{len(cols)} column(s) are >= 20% missing; missingness may itself be informative.", do="Ask how the values went missing.")
     if drop:
         dev = [e for e, c in zip(evs, cols) if c in drop]
         out.decision("drop_mostly_missing", f"Drop {len(drop)} mostly-missing column(s)", DecisionClass.CONDITIONAL,
@@ -244,6 +334,8 @@ def high_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                      risk="Dropping discards any signal in the missingness pattern.",
                      verify_hint="Compare CV scores with and without these columns.",
                      finding_ids=[f], evidence_ids=dev, step=Step(kind="drop_columns", params={"columns": drop}),
+                     why=f"{len(drop)} column(s) are >= 50% missing; their missing indicator may still be informative.",
+                     do="Test dropping them with your estimator (report.verify).",
                      trig=Trigger.FIRED)
 
 
@@ -339,7 +431,7 @@ def id_like_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                    stage="columns", action=f"Exclude '{c}' from the features.",
                    rationale="Row identifiers let models memorize rows; their order can also encode time or the target.",
                    risk="If it identifies an entity with repeated rows, pass it as groups= rather than just dropping it.",
-                   finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": [c]}))
+                   finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": [c]}), why=f"'{c}' is near-unique ({cp.unique_ratio:.0%} distinct) and looks like an identifier.", do=f"Answer whether '{c}' is an identifier.")
 
 
 @rule("leakage_hint", "2", thresholds={"association": 0.95, "uncertain_association": 0.90, "abs_pearson": 0.98})
@@ -353,7 +445,7 @@ def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
             continue
         evs = []
         if a is not None:
-            evs.append(out.ev(f"col.{c}.association", f"Single-feature held-out score · {c}", a,
+            evs.append(out.ev(f"col.{c}.association", f"Single-feature 2-fold CV score · {c}", a,
                               p.relations.association_method, columns=[c, p.target.name]))
         if pr is not None and pr >= 0.98:
             evs.append(out.ev(f"col.{c}.pearson", f"|Pearson r| with target · {c}", pr,
@@ -366,7 +458,7 @@ def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
         sev = Severity.CRITICAL if (a or 0) >= 0.99 or (pr or 0) >= 0.995 else Severity.WARN
         f = out.finding(f"leakage_hint.{c}", sev, Trigger.FIRED,
                         f"Single-feature predictive leakage hint — manual review required: '{c}' alone predicts "
-                        f"the target (held-out score {a if a is not None else float('nan'):.3f}). High predictive "
+                        f"the target (2-fold CV single-feature score {a if a is not None else float('nan'):.3f}). High predictive "
                         "power is not proof of leakage; genuinely strong features look the same.", evs, [c])
         contextual(out, ctx, qid=f"leakage.{c}",
                    question=f"Is '{c}' known at prediction time, before the target is observed?",
@@ -377,14 +469,14 @@ def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                    rationale="A feature that is a consequence or copy of the target makes every metric meaningless.",
                    risk="Some features are legitimately this strong; dropping one throws away real signal.",
                    verify_hint="Trace how and when the column is recorded relative to the target.",
-                   finding_ids=[f], evidence_ids=evs, step=Step(kind="drop_columns", params={"columns": [c]}))
+                   finding_ids=[f], evidence_ids=evs, step=Step(kind="drop_columns", params={"columns": [c]}), why=f"'{c}' alone predicts the target with a 2-fold CV score of {a if a is not None else float('nan'):.3f}.", do=f"Answer whether '{c}' is known at prediction time.")
 
 
 # --------------------------------------------------------------------------- #
 # Preprocessing
 # --------------------------------------------------------------------------- #
 
-@rule("fit_in_fold", "1")
+@rule("fit_in_fold", "2")
 def fit_in_fold(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     miss = p.dataset.missing_columns
     cat = p.kind_of(ColumnKind.CATEGORICAL)
@@ -395,18 +487,22 @@ def fit_in_fold(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                           columns=miss))
     parts = []
     if num:
-        parts.append(f"{len(num)} numeric/boolean: median imputation" + (" + missing indicator" if miss else "") + ", standard scaling")
+        parts.append(f"{len(num)} numeric/boolean: median imputation" + (" + missing indicator" if miss else ""))
     if cat:
         parts.append(f"{len(cat)} categorical: 'missing' category + one-hot (categories under 1% grouped)")
     out.decision("fit_in_fold", "Fit all preprocessing inside each fold", DecisionClass.PROCEDURAL, "preprocessing",
-                 "Put imputation, encoding and scaling in one sklearn Pipeline so they are re-fit on every training fold"
-                 + (f" ({'; '.join(parts)})." if parts else "."),
-                 "Statistics computed on the full data (medians, category lists, scalers) leak test-fold information.",
-                 risk="These defaults are generic; replace them where domain knowledge says otherwise.",
-                 evidence_ids=evs)
+                 "Put every preprocessing step in one sklearn Pipeline so it is re-fit on each training fold"
+                 + (f" (defaults: {'; '.join(parts)})." if parts else "."),
+                 "Statistics computed on the full data (medians, category lists, encoders) leak test-fold "
+                 "information into the score.",
+                 risk="The imputation and encoding defaults are generic; replace them where domain knowledge says "
+                      "otherwise. Feature scaling is estimator-dependent and is not part of this decision: export "
+                      "adds it with scale=True (default) and you can turn it off.",
+                 evidence_ids=evs, why="Statistics fit on all rows leak test-fold information into the score.",
+                 do="Keep imputation and encoding inside the exported Pipeline.")
 
 
-@rule("skewed_features", "1", thresholds={"abs_skew": 2.0})
+@rule("skewed_features", "2", thresholds={"abs_skew": 2.0})
 def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     cols, trig_any = [], []
     for c, cp in p.columns.items():
@@ -421,16 +517,21 @@ def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     evs = [out.ev(f"col.{c}.skew", f"Skewness · {c}", p.columns[c].stats["skew"], BOOT,
                   ci=p.columns[c].ci.get("skew"), columns=[c]) for c in cols]
     trig = Trigger.FIRED if Trigger.FIRED in trig_any else Trigger.UNCERTAIN
+    n_fired = sum(t is Trigger.FIRED for t in trig_any)
+    n_near = len(cols) - n_fired
+    counts = f"{n_fired} skewed" + (f" + {n_near} near-threshold" if n_near else "")
     f = out.finding("skewed_features", Severity.INFO, trig,
-                    f"{len(cols)} numeric feature(s) are strongly skewed (|skew| >= 2).", evs, cols)
-    out.decision("power_transform", f"Power-transform {len(cols)} skewed feature(s)", DecisionClass.CONDITIONAL,
+                    f"{counts} numeric feature(s) (|skew| >= 2; near-threshold = interval straddles 2).", evs, cols)
+    out.decision("power_transform", f"Power-transform {counts} feature(s)", DecisionClass.CONDITIONAL,
                  "preprocessing", f"Apply a Yeo-Johnson transform to {cols[:8]}{' ...' if len(cols) > 8 else ''}.",
                  "Skewed inputs can hurt linear and distance-based models; tree ensembles are usually far less "
                  "sensitive. The effect is model-dependent, so it is tested, not assumed.",
                  risk="Transforms make coefficients harder to interpret and can amplify noise in the tails.",
                  verify_hint="Compare CV scores with and without the transform for your model family.",
                  finding_ids=[f], evidence_ids=evs, trig=trig,
-                 step=Step(kind="power_transform", params={"columns": cols}))
+                 step=Step(kind="power_transform", params={"columns": cols}),
+                 why=f"{counts} feature(s) have |skew| >= 2; whether that matters depends on the model family.",
+                 do="Test a Yeo-Johnson transform with your estimator (report.verify).")
 
 
 @rule("high_cardinality", "1", thresholds={"cardinality": 50})
@@ -448,6 +549,8 @@ def high_cardinality(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  "but can overfit. Only an experiment can tell which wins here.",
                  risk="Target encoding fit outside the fold is a leak; TargetEncoder inside the Pipeline avoids that.",
                  finding_ids=[f], evidence_ids=evs, trig=Trigger.FIRED,
+                 why=f"{len(cols)} categorical column(s) have more than 50 categories.",
+                 do="Test target encoding against one-hot with your estimator (report.verify).",
                  step=Step(kind="target_encode", params={"columns": cols}))
 
 
@@ -481,6 +584,8 @@ def class_imbalance(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  risk="Probabilities are no longer calibrated; re-calibrate if you need them.",
                  verify_hint="Compare the chosen metric with and without class weights.",
                  finding_ids=[f], evidence_ids=[e1, e2], trig=t, status=status, note=note,
+                 why=f"Classes are {ratio:.1f}:1; re-weighting may raise minority recall at the cost of precision.",
+                 do="Test class_weight='balanced' with your estimator (report.verify).",
                  step=Step(kind="class_weight", params={"value": "balanced"}))
 
 
@@ -509,7 +614,7 @@ def target_skew(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
         out.decision("log_target", "No log transform: target has negative values", DecisionClass.REVIEW, "target",
                      "A log transform is undefined here; if a multiplicative scale makes sense, consider a signed "
                      "transform (e.g. arcsinh) and test it yourself.",
-                     f"{neg:.1%} of target values are negative.", finding_ids=[f], evidence_ids=[e1, e3])
+                     f"{neg:.1%} of target values are negative.", finding_ids=[f], evidence_ids=[e1, e3], why=f"{neg:.1%} of target values are negative, so log(1 + y) is undefined.", do="Consider a signed transform (arcsinh) and test it yourself.")
         return
     out.decision("log_target", "Model log(1 + target)", DecisionClass.CONDITIONAL, "target",
                  "Wrap the estimator in TransformedTargetRegressor(func=log1p, inverse_func=expm1).",
@@ -518,7 +623,10 @@ def target_skew(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  risk="Predictions back-transformed from the log scale are biased low for the mean; RMSE can get worse "
                       "while MAE improves.",
                  verify_hint="Compare MAE and RMSE with and without the transform.",
-                 finding_ids=[f], evidence_ids=[e1, e2], trig=t, step=Step(kind="log_target"))
+                 finding_ids=[f], evidence_ids=[e1, e2], trig=t, step=Step(kind="log_target"),
+                 why=f"The target is skewed (skew {skew:.2f}, {s.get('outlier_fraction', 0):.1%} IQR-outliers) and "
+                     "non-negative.",
+                 do="Test log(1 + y) with your estimator (report.verify).")
 
 
 @rule("heavy_tailed_target", "1", thresholds={"excess_kurtosis": 3.0}, tasks=(REG,))

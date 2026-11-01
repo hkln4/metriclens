@@ -578,7 +578,7 @@
   "verification": [
     {
       "dataset": "sklearn:load_breast_cancer",
-      "seconds": 7.7,
+      "seconds": 10.0,
       "dev_metric": "accuracy",
       "decisions": {
         "d.power_transform": "inconclusive"
@@ -587,37 +587,37 @@
         {
           "decision": "d.power_transform",
           "family": "linear_proxy",
-          "mean_diff": -0.008755375059722903,
+          "mean_diff": 0.0011592402835998532,
           "ci": [
-            -0.030427494991638715,
-            0.012916744872192909
+            -0.01997231007238984,
+            0.02229079063958955
           ],
-          "p_holm": 0.7692032712867033,
+          "p_holm": 1.0,
           "outcome": "no_difference"
         },
         {
           "decision": "d.power_transform",
           "family": "tree_proxy",
-          "mean_diff": 0.0021978021978022013,
+          "mean_diff": 0.0011747658231123484,
           "ci": [
-            -0.007103555231245941,
-            0.011499159626850344
+            -0.002567032684193119,
+            0.004916564330417816
           ],
-          "p_holm": 0.7692032712867033,
+          "p_holm": 1.0,
           "outcome": "no_difference"
         }
       ]
     },
     {
       "dataset": "sklearn:load_diabetes",
-      "seconds": 1.8,
+      "seconds": 3.1,
       "dev_metric": "neg_mean_absolute_error",
       "decisions": {},
       "experiments": []
     },
     {
       "dataset": "sklearn:load_wine",
-      "seconds": 2.4,
+      "seconds": 2.8,
       "dev_metric": "accuracy",
       "decisions": {},
       "experiments": []

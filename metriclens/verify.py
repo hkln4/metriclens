@@ -34,42 +34,39 @@ from .report.model import Decision, Experiment
 _TESTABLE = (DecisionStatus.PROPOSED, DecisionStatus.UNCERTAIN)
 
 
-def _splits(report: Any, X: pd.DataFrame, y: pd.Series, groups: Any, budget: Budget, seed: int) -> list:
+def verification_cv(report: Any, y: pd.Series, budget: Budget, seed: int) -> tuple[Any, str, str]:
+    """The splitter experiments and baselines use: the export splitter (the CV
+    decision), repeated `budget.n_repeats` times when it is a plain k-fold.
+    Returns (splitter, protocol, description)."""
     from sklearn import model_selection as ms
 
-    task = report.task
-    if report.context.time_col:
-        cv = ms.TimeSeriesSplit(n_splits=budget.n_splits)
-        return list(cv.split(X))
-    if groups is not None:
-        cv = (ms.StratifiedGroupKFold(budget.n_splits, shuffle=True, random_state=seed)
-              if task is Task.CLASSIFICATION else ms.GroupKFold(budget.n_splits))
-        return list(cv.split(X, y, groups))
-    if task is Task.CLASSIFICATION:
-        k = int(max(2, min(budget.n_splits, y.value_counts().min())))
-        cv = ms.RepeatedStratifiedKFold(n_splits=k, n_repeats=budget.n_repeats, random_state=seed)
-    else:
-        cv = ms.RepeatedKFold(n_splits=budget.n_splits, n_repeats=budget.n_repeats, random_state=seed)
-    return list(cv.split(X, y))
+    step = next(d.step for d in report.decisions if d.id == "d.cv" and d.step is not None)
+    params = dict(step.params)
+    name = params.pop("name")
+    if name == "TimeSeriesSplit":
+        return ms.TimeSeriesSplit(**params), "time_series", f"TimeSeriesSplit(n_splits={params['n_splits']})"
+    if name in ("GroupKFold", "StratifiedGroupKFold"):
+        return getattr(ms, name)(**params), "grouped_kfold", f"{name}(n_splits={params['n_splits']})"
+    k = int(params["n_splits"])
+    if report.task is Task.CLASSIFICATION:
+        k = int(max(2, min(k, y.value_counts().min())))  # the dev subsample may have fewer minority rows
+    repeats = int(params.get("n_repeats", budget.n_repeats))
+    cls = ms.RepeatedStratifiedKFold if name in ("StratifiedKFold", "RepeatedStratifiedKFold") else ms.RepeatedKFold
+    return (cls(n_splits=k, n_repeats=repeats, random_state=seed), "repeated_kfold",
+            f"{cls.__name__}(n_splits={k}, n_repeats={repeats}) — the export splitter, repeated")
 
 
-def _protocol(report: Any, groups: Any, budget: Budget, n_folds: int) -> tuple[str, str, int, int]:
-    """Name the split protocol and the inference that is valid for it."""
-    if report.context.time_col:
-        return ("time_series",
-                f"{n_folds} expanding-window time-series folds. Training sets overlap and grow and folds are not "
+def _protocol_method(protocol: str, n_folds: int) -> str:
+    if protocol == "time_series":
+        return (f"{n_folds} expanding-window time-series folds. Training sets overlap and grow and folds are not "
                 "exchangeable, so no significance test is valid here; the outcome is left to you from the per-fold "
-                "differences.", n_folds, 1)
-    if groups is not None:
-        return ("grouped_kfold",
-                f"one run of {n_folds}-fold grouped CV on identical folds (groups cannot be re-shuffled without "
+                "differences.")
+    if protocol == "grouped_kfold":
+        return (f"one run of {n_folds}-fold grouped CV on identical folds (groups cannot be re-shuffled without "
                 "changing the split); corrected resampled t-test (Nadeau & Bengio 2003), df = k-1, low power with "
-                "few folds; Holm across this run.", n_folds, 1)
-    k = n_folds // budget.n_repeats
-    return ("repeated_kfold",
-            f"{budget.n_repeats}x{k}-fold CV on identical folds; corrected repeated k-fold t-test (Nadeau & Bengio "
-            "2003; Bouckaert & Frank 2004): variance x (1/n + n_test/n_train), df = n-1 over all n folds; Holm "
-            "across this run.", k, budget.n_repeats)
+                "few folds; Holm across this run.")
+    return (f"{n_folds} folds of repeated k-fold CV on identical folds; corrected repeated k-fold t-test (Nadeau & "
+            "Bengio 2003; Bouckaert & Frank 2004): variance x (1/n + n_test/n_train), df = n-1; Holm across this run.")
 
 
 def corrected_ttest(base: np.ndarray, cand: np.ndarray, test_train_ratio: float) -> tuple[float, tuple[float, float], float]:
@@ -127,10 +124,12 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
     """Return (experiments, baseline, notes) — notes map decision id -> status note."""
     from sklearn.dummy import DummyClassifier, DummyRegressor
     from sklearn.metrics import get_scorer
+    from sklearn.pipeline import Pipeline
 
-    p = report.profile
+    p = report.details.profile
+    ctx = report.details.context
     tgt = report.target
-    # work on positions so a groups Series stays aligned through filtering/sampling
+    # work on positions so a groups array stays aligned through filtering/sampling
     df = df.reset_index(drop=True)
     if groups is not None and not isinstance(groups, str):
         groups = pd.Series(np.asarray(groups).ravel())
@@ -140,8 +139,8 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
 
         strat = df[tgt] if report.task is Task.CLASSIFICATION else None
         df, _ = sample_rows(df, budget.max_rows, seed, strat)
-    if report.context.time_col:
-        df = df.sort_values(report.context.time_col, kind="stable")
+    if ctx.time_col:
+        df = df.sort_values(ctx.time_col, kind="stable")
     g = None if groups is None else (df[groups] if isinstance(groups, str) else groups.loc[df.index])
     X, y = df.drop(columns=[tgt]), df[tgt]
 
@@ -149,9 +148,12 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
     scorer = build_scorer(plan.dev_metric, p, positive_label(p, plan.positive_label))
     if isinstance(scorer, str):
         scorer = get_scorer(scorer)
-    splits = _splits(report, X, y, g, budget, seed)
+    cv, protocol, cv_desc = verification_cv(report, y, budget, seed)
+    splits = list(cv.split(X, y, g) if g is not None else cv.split(X, y))
     ratio = float(np.mean([len(te) / len(tr) for tr, te in splits]))
-    protocol, method, n_splits, n_repeats = _protocol(report, g, budget, len(splits))
+    method = _protocol_method(protocol, len(splits))
+    n_rep = int(getattr(cv, "n_repeats", 1))
+    n_spl = len(splits) // n_rep
 
     base_steps = [d.step for d in report.decisions
                   if d.step and d.step.kind != "cv" and d.cls is not DecisionClass.CONDITIONAL and d.eligible()]
@@ -159,10 +161,9 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
 
     t0 = time.perf_counter()
     baseline: dict[str, Any] = {"metric": plan.dev_metric, "n_rows": int(len(df)), "n_folds": len(splits),
+                                "cv": cv_desc, "protocol": protocol,
                                 "provisional_metric": plan.dev_metric_provisional, "families": {}}
     dummy = DummyClassifier(strategy="prior") if report.task is Task.CLASSIFICATION else DummyRegressor(strategy="median")
-    from sklearn.pipeline import Pipeline
-
     try:
         ds = _score(Pipeline([("model", dummy)]), X, y, splits, scorer)
         baseline["dummy"] = {"mean": float(ds.mean()), "std": float(ds.std(ddof=1))}
@@ -170,19 +171,19 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
         baseline["dummy"] = {"error": str(exc)}
     base_scores: dict[str, np.ndarray] = {}
     for fam, est in families:
-        s = _score(build_model(p, base_steps, est), X, y, splits, scorer)
-        base_scores[fam] = s
-        baseline["families"][fam] = {"estimator": type(est).__name__, "mean": float(s.mean()),
-                                     "std": float(s.std(ddof=1))}
+        sc = _score(build_model(p, base_steps, est), X, y, splits, scorer)
+        base_scores[fam] = sc
+        baseline["families"][fam] = {"estimator": type(est).__name__, "mean": float(sc.mean()),
+                                     "std": float(sc.std(ddof=1))}
 
     candidates = [d for d in report.decisions if d.cls is DecisionClass.CONDITIONAL and d.status in _TESTABLE]
     candidates.sort(key=lambda d: (d.status is DecisionStatus.UNCERTAIN))
-    experiments: list[Experiment] = []
+    raw: list[dict[str, Any]] = []
     notes: dict[str, str] = {}
-    runs = 0
     for d in candidates:
+        assert d.step is not None
         for fam, est in families:
-            if runs >= budget.max_experiments or time.perf_counter() - t0 > budget.max_seconds:
+            if len(raw) >= budget.max_experiments or time.perf_counter() - t0 > budget.max_seconds:
                 notes[d.id] = "skipped_budget"
                 break
             if d.step.kind == "class_weight" and "class_weight" not in est.get_params():
@@ -194,7 +195,6 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
             except Exception as exc:
                 notes[d.id] = f"error: {exc}"
                 continue
-            runs += 1
             base = base_scores[fam]
             min_eff = (budget.min_effect if budget.min_effect is not None
                        else budget.min_relative_effect * abs(float(base.mean())))
@@ -202,21 +202,19 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
             if protocol == "time_series":
                 mean, ci, pval = float(diffs.mean()), None, None
             else:
-                mean, ci_t, pval = corrected_ttest(base, cand, ratio)
-                ci = ci_t
-            experiments.append(Experiment(
+                mean, ci, pval = corrected_ttest(base, cand, ratio)
+            raw.append(dict(
                 id=f"exp.{d.id[2:]}.{fam}", decision_id=d.id, family=fam, estimator=type(est).__name__,
-                metric=plan.dev_metric, n_rows=int(len(df)), n_splits=n_splits, n_repeats=n_repeats,
+                metric=plan.dev_metric, n_rows=int(len(df)), n_splits=n_spl, n_repeats=n_rep, cv=cv_desc,
                 baseline_scores=[float(x) for x in base], candidate_scores=[float(x) for x in cand],
                 mean_diff=mean, ci=ci, p_value=pval, min_effect=float(min_eff),
                 folds_improved=int((diffs > 0).sum()), protocol=protocol, method=method,
                 seconds=round(time.perf_counter() - ts, 2)))
-    tested = [e for e in experiments if e.p_value is not None]
-    adjusted = holm([float(e.p_value) for e in tested if e.p_value is not None]) if tested else []
-    for e, a in zip(tested, adjusted):
-        e.p_adjusted = a
-    for e in experiments:
-        e.outcome = classify_outcome(e.mean_diff, e.p_adjusted, e.min_effect, budget.alpha)
+    tested = [r for r in raw if r["p_value"] is not None]
+    for r, a in zip(tested, holm([float(r["p_value"]) for r in tested]) if tested else []):
+        r["p_adjusted"] = a
+    experiments = [Experiment(**r, outcome=classify_outcome(r["mean_diff"], r.get("p_adjusted"), r["min_effect"],
+                                                            budget.alpha)) for r in raw]
     baseline["seconds"] = round(time.perf_counter() - t0, 2)
     return experiments, baseline, notes
 

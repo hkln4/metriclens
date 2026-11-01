@@ -7,10 +7,10 @@ import metriclens as ml
 
 
 def test_export_runs_with_string_labels_and_positive_class(messy_df):
-    rep = ml.analyze(messy_df, "y", answers={"metric_priority": "miss_costly", "leakage.leak": "no",
-                                             "id_like.customer_id": "identifier"})
+    rep = ml.analyze(messy_df, "y", holdout=0.2, answers={"metric_priority": "miss_costly", "leakage.leak": "no",
+                                                          "id_like.customer_id": "identifier"})
     ex = rep.export(LogisticRegression(max_iter=1000))
-    dev, _ = rep.split(messy_df)
+    dev, _ = rep.holdout(messy_df)
     res = cross_validate(ex.model, dev[ex.feature_columns], dev.y, cv=ex.cv, scoring=ex.scoring,
                          error_score="raise")
     assert 0 <= res["test_recall"].mean() <= 1
@@ -30,9 +30,9 @@ def test_unverified_conditional_decisions_are_excluded(messy_df):
 
 def test_export_with_groups_column(reg_df):
     df = reg_df.assign(g=np.arange(len(reg_df)) // 5)
-    rep = ml.analyze(df, "y", groups="g")
+    rep = ml.analyze(df, "y", groups="g", holdout=0.2)
     ex = rep.export(Ridge())
-    dev, _ = rep.split(df)
+    dev, _ = rep.holdout(df)
     assert ex.groups == "g"
     cross_validate(ex.model, dev[ex.feature_columns], dev.y, cv=ex.cv, groups=dev.g, scoring=ex.scoring,
                    error_score="raise")
@@ -56,10 +56,12 @@ def test_export_handles_missing_and_nullable_ints():
 
 def _verified(rep, did):
     from metriclens.enums import DecisionStatus
+    from metriclens.frozen import evolve
 
-    rep = rep.model_copy(deep=True)
-    rep.decision(did).status = DecisionStatus.VERIFIED
-    return rep
+    decs = [evolve(d, status=DecisionStatus.VERIFIED) if d.id == did else d for d in rep.decisions]
+    new = evolve(rep, decisions=decs)
+    new._estimator = rep._estimator
+    return new
 
 
 def test_estimator_steps_are_not_silently_dropped_without_estimator():

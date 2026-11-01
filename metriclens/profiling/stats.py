@@ -108,18 +108,31 @@ def bootstrap_ci(
     v: np.ndarray, fn: Callable[[np.ndarray], float], n_boot: int, max_rows: int,
     seed: int, alpha: float = 0.05,
 ) -> tuple[float, float] | None:
-    """Percentile bootstrap interval of `fn` over rows of `v` (seeded)."""
-    if n_boot <= 0 or len(v) < 10:
+    """Bootstrap 95% interval of `fn` over rows of `v` (seeded).
+
+    Up to `max_rows` rows: the ordinary percentile bootstrap. Above it, resamples
+    of m = max_rows rows are drawn (m-out-of-n bootstrap) and their spread around
+    the full-sample estimate is rescaled by sqrt(m / n), so the interval refers to
+    the full sample rather than to an m-row sample (which would be ~sqrt(n/m)
+    times too wide)."""
+    n = len(v)
+    if n_boot <= 0 or n < 10:
         return None
     rng = np.random.default_rng(seed)
-    m = min(len(v), max_rows)
+    m = min(n, max_rows)
     stats = np.empty(n_boot)
     for i in range(n_boot):
-        stats[i] = fn(v[rng.integers(0, len(v), size=m)])
+        stats[i] = fn(v[rng.integers(0, n, size=m)])
     stats = stats[np.isfinite(stats)]
     if len(stats) < n_boot // 2:
         return None
     lo, hi = np.quantile(stats, [alpha / 2, 1 - alpha / 2])
+    if m < n:
+        full = fn(v)
+        if not np.isfinite(full):
+            return None
+        scale = np.sqrt(m / n)
+        lo, hi = full + scale * (lo - full), full + scale * (hi - full)
     return (r(lo), r(hi))
 
 
@@ -167,15 +180,17 @@ def _lookup_predict(c_fit: np.ndarray, y_fit: np.ndarray, c_ev: np.ndarray) -> n
 def single_feature_score(
     x: pd.Series, y: pd.Series, numeric: bool, classification: bool, seed: int,
 ) -> float | None:
-    """How well this one feature alone predicts the target, on held-out rows.
+    """How well this one feature alone predicts the target: a 2-fold
+    cross-validated single-feature score on the development rows.
 
-    A one-feature predictor is fit on a random half of the rows and scored on
-    the other half: rank-based nearest neighbours for numeric features, a
-    category lookup table for the rest. Score:
-      regression      R^2 on the held-out half
+    A one-feature predictor (rank-based nearest neighbours for numeric
+    features, a category lookup table otherwise) is fit on a random half and
+    scored on the other half, then the halves swap; the two scores are averaged.
+      regression      R^2
       classification  balanced accuracy rescaled so chance = 0 and perfect = 1
-    Held-out scoring stops identifiers and high-cardinality columns from scoring
-    well by memorization alone.
+    Scoring on rows the predictor did not see stops identifiers and
+    high-cardinality columns from scoring well by memorization alone. This is a
+    split of the development rows; it never touches the holdout.
     """
     mask = y.notna().to_numpy()
     yt = y.to_numpy()[mask]
@@ -193,22 +208,29 @@ def single_feature_score(
         ymat = yf[:, None]
     rng = np.random.default_rng(seed)
     perm = rng.permutation(n)
-    fit, ev = perm[: n // 2], perm[n // 2:]
+    halves = (perm[: n // 2], perm[n // 2:])
     if numeric:
         xv = pd.to_numeric(x, errors="coerce").astype(float).to_numpy()[mask]
-        pred = _numeric_predict(xv[fit], ymat[fit], xv[ev])
     else:
         codes, _ = pd.factorize(x.astype(str).where(x.notna(), "__nan__"))
         codes = codes[mask]
-        pred = _lookup_predict(codes[fit], ymat[fit], codes[ev])
-    if classification:
-        p = pred.argmax(1)
-        true = yi[ev]
-        recalls = [float((p[true == j] == j).mean()) for j in range(k) if (true == j).any()]
-        bacc = float(np.mean(recalls))
-        return r(max(0.0, (bacc - 1 / k) / (1 - 1 / k)), 4)
-    true_r = yf[ev]
-    ss_tot = float(((true_r - true_r.mean()) ** 2).sum())
-    if ss_tot == 0:
-        return None
-    return r(max(0.0, 1 - float(((true_r - pred[:, 0]) ** 2).sum()) / ss_tot), 4)
+    scores = []
+    # 2-fold cross-validation: fit on one half, score the other, then swap
+    for fit, ev in (halves, halves[::-1]):
+        if numeric:
+            pred = _numeric_predict(xv[fit], ymat[fit], xv[ev])
+        else:
+            pred = _lookup_predict(codes[fit], ymat[fit], codes[ev])
+        if classification:
+            p = pred.argmax(1)
+            true = yi[ev]
+            recalls = [float((p[true == j] == j).mean()) for j in range(k) if (true == j).any()]
+            bacc = float(np.mean(recalls))
+            scores.append(max(0.0, (bacc - 1 / k) / (1 - 1 / k)))
+        else:
+            true_r = yf[ev]
+            ss_tot = float(((true_r - true_r.mean()) ** 2).sum())
+            if ss_tot == 0:
+                return None
+            scores.append(max(0.0, 1 - float(((true_r - pred[:, 0]) ** 2).sum()) / ss_tot))
+    return r(float(np.mean(scores)), 4)

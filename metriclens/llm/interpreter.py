@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from ..frozen import evolve
 from ..report.model import LLMClaim, LLMInterpretation, SemanticFlag
 from .config import LLMConfig, coerce_config
 from .payload import build_payload, disclosure
@@ -119,8 +120,8 @@ def interpret_report(report: Any, llm: Any) -> Any:
     def real(x: str) -> str:
         return reverse.get(x, x)
 
-    known_ev, known_dec = set(report.evidence), {d.id for d in report.decisions}
-    known_cols = set(report.profile.columns) | {report.target}
+    known_ev, known_dec = set(report.details.evidence), {d.id for d in report.decisions}
+    known_cols = set(report.details.profile.columns) | {report.target}
     dropped = 0
     claims = []
     for c in out.priorities:
@@ -138,23 +139,24 @@ def interpret_report(report: Any, llm: Any) -> Any:
             continue
         flags.append(SemanticFlag(column=col, concern=f.concern, reason=f.reason))
 
-    new = report.model_copy(deep=True)
-    new._holdout_positions = report._holdout_positions
-    new._estimator = report._estimator
-    qmap = {q.id: q for q in new.questions}
+    suggestions: dict[str, tuple[str, str]] = {}
+    qmap = {q.id: q for q in report.questions}
     for s in out.suggested_answers:
         q = qmap.get(real(s.question_id))
         if q is None or q.answer is not None or s.option not in [o.value for o in q.options]:
             dropped += 1
             continue
-        q.suggestion, q.suggestion_reason = s.option, s.reason
+        suggestions[q.id] = (s.option, s.reason)
+    questions = [evolve(q, suggestion=suggestions[q.id][0], suggestion_reason=suggestions[q.id][1])
+                 if q.id in suggestions else q for q in report.questions]
     model = getattr(provider, "model", None) or cfg.model or "?"
-    from ..api import _next_revision
+    from ..api import _carry, _next_revision
 
-    new.manifest = _next_revision(new.manifest, "interpret", provider=type(provider).__name__, model=str(model),
-                                  column_names_sent=cfg.share_column_names, dropped_claims=dropped)
-    new.llm = LLMInterpretation(
+    llm_out = LLMInterpretation(
         provider=type(provider).__name__, model=str(model), summary=out.summary, priorities=claims,
         questions_for_user=out.questions_for_user, semantic_flags=flags, dropped_claims=dropped,
         disclosure=disclosure(cfg, type(provider).__name__, str(model), payload))
-    return new
+    manifest = _next_revision(report.details.manifest, "interpret", provider=type(provider).__name__,
+                              model=str(model), column_names_sent=cfg.share_column_names, dropped_claims=dropped)
+    details = evolve(report.details, manifest=manifest, llm=llm_out)
+    return _carry(report, evolve(report, questions=questions, details=details))

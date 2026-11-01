@@ -31,7 +31,7 @@ def run_case(case) -> dict:
     df = case.make()
     rep = ml.analyze(df, case.target, task=case.task, **case.kwargs)
     by_rule: dict[str, set[str]] = {}
-    for f in rep.findings:
+    for f in rep.details.findings:
         by_rule.setdefault(f.rule_id, set()).add(f.trigger.value)
     checks = []
     for rid in case.must_fire:
@@ -83,11 +83,18 @@ def main() -> int:
                      "finding matches the expectation: fired / none / uncertain (near threshold)."),
         "cases": results, "rules": rules,
     }
-    if a.verify:
-        payload["verification"] = verify_real()
     out_dir = ROOT / "benchmarks" / "results"
     out_dir.mkdir(exist_ok=True)
-    (out_dir / f"{MANIFEST_VERSION}.json").write_text(json.dumps(payload, indent=2, default=str))
+    result_path = out_dir / f"{MANIFEST_VERSION}.json"
+    if a.verify:
+        payload["verification"] = verify_real()
+    elif result_path.exists():
+        # keep the committed experiment section when only the detection benchmark is re-run
+        previous = json.loads(result_path.read_text())
+        if "verification" in previous:
+            payload["verification"] = previous["verification"]
+            payload["verification_from"] = previous.get("verification_from", previous.get("metriclens_version"))
+    result_path.write_text(json.dumps(payload, indent=2, default=str))
     md = [f"# Benchmark {MANIFEST_VERSION} (metriclens {ml.__version__})", "", payload["protocol"], "",
           "Detection pass rate on known-hazard fixtures. This measures whether each rule fires (or stays silent) "
           "where the fixture says it should; it is not a claim about accuracy on real-world data.", "",
@@ -98,7 +105,7 @@ def main() -> int:
         failed = "; ".join(f"{c['rule']}: expected {c['expect']}, got {','.join(c['got'])}"
                            for c in r["checks"] if not c["ok"])
         md.append(f"| {r['case']} | {r['source']} | {r['rows']} | {'yes' if r['ok'] else 'NO'} | {failed} |")
-    if a.verify:
+    if "verification" in payload:
         md += ["", "## Experiment outcomes on real data (proxy models, development evidence)", ""]
         for v in payload["verification"]:
             md.append(f"**{v['dataset']}** ({v['dev_metric']}, {v['seconds']} s)")

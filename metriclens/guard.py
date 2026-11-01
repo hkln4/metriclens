@@ -42,6 +42,10 @@ def validate_inputs(
     _require_column(df, target, "target")
     if df[target].notna().sum() == 0:
         raise ValueError(f"Target column '{target}' has no non-missing values.")
+    n_target = int(df[target].nunique(dropna=True))
+    if n_target < 2:
+        raise ValueError(f"Target column '{target}' has a single value ({df[target].dropna().iloc[0]!r}); there is "
+                         "nothing to learn. Check the target column, or the filter that produced this frame.")
     if time_col is not None:
         _require_column(df, time_col, "time_col")
         if time_col == target:

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from ..enums import ColumnKind, Modality, Task
+from ..frozen import Frozen
 
 
-class ColumnProfile(BaseModel):
+class ColumnProfile(Frozen):
     name: str
     kind: ColumnKind
     kind_reason: str
@@ -25,11 +26,11 @@ class ColumnProfile(BaseModel):
     unique_ratio: float
     stats: dict[str, Any] = Field(default_factory=dict)
     ci: dict[str, tuple[float, float]] = Field(default_factory=dict)
-    # single-feature held-out predictive score (see stats.single_feature_score)
+    # 2-fold cross-validated single-feature score (see stats.single_feature_score)
     association: float | None = None
 
 
-class TargetProfile(BaseModel):
+class TargetProfile(Frozen):
     name: str
     task: Task
     task_inferred: bool
@@ -40,7 +41,7 @@ class TargetProfile(BaseModel):
     ci: dict[str, tuple[float, float]] = Field(default_factory=dict)
 
 
-class DatasetProfile(BaseModel):
+class DatasetProfile(Frozen):
     n_rows: int                 # rows profiled (after holdout and sampling)
     n_rows_input: int           # rows the user passed in
     n_columns: int
@@ -50,25 +51,25 @@ class DatasetProfile(BaseModel):
     # groups of rows with identical features but different targets
     conflicting_duplicate_groups: int = 0
     kind_counts: dict[str, int] = Field(default_factory=dict)
-    missing_columns: list[str] = Field(default_factory=list)
+    missing_columns: tuple[str, ...] = ()
     # Jaccard co-missingness between the most-missing columns
     missing_cooccurrence: dict[str, Any] = Field(default_factory=dict)
 
 
-class Relations(BaseModel):
+class Relations(Frozen):
     association_method: str = (
-        "single-feature held-out score: rank nearest-neighbours (numeric) or a category "
-        "lookup table, fit on a random half and scored on the other half (R^2 for "
-        "regression, chance-rescaled balanced accuracy for classification)")
+        "2-fold cross-validated single-feature score on the development rows: rank nearest-neighbours "
+        "(numeric) or a category lookup table, fit on one half and scored on the other, then swapped "
+        "(R^2 for regression, chance-rescaled balanced accuracy for classification)")
     corr_method: str = "Spearman rank correlation"
-    corr_columns: list[str] = Field(default_factory=list)
-    corr_matrix: list[list[float | None]] = Field(default_factory=list)
-    high_corr_pairs: list[dict[str, Any]] = Field(default_factory=list)
+    corr_columns: tuple[str, ...] = ()
+    corr_matrix: tuple[tuple[float | None, ...], ...] = ()
+    high_corr_pairs: tuple[dict[str, Any], ...] = ()
     # |Pearson r| of numeric features with a numeric target (regression only)
     pearson_target: dict[str, float] = Field(default_factory=dict)
 
 
-class DataProfile(BaseModel):
+class DataProfile(Frozen):
     modality: Modality = Modality.TABULAR
     task: Task
     task_inferred: bool
@@ -80,6 +81,10 @@ class DataProfile(BaseModel):
     roles: dict[str, str] = Field(default_factory=dict)
     sampling: dict[str, Any] = Field(default_factory=dict)
     holdout: dict[str, Any] = Field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (f"<DataProfile {self.task.value}: {self.dataset.n_rows} dev rows, "
+                f"{self.dataset.n_features} features>")
 
     @property
     def feature_columns(self) -> list[str]:
