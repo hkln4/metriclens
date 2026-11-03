@@ -63,6 +63,10 @@ Shortcut: `pf.analyze(df, target, holdout=0.2)` sets the holdout aside itself,
 before profiling; `dev_df, test_df = report.holdout(df)` gives it back. Without
 `holdout=`, `analyze` never splits — the default is `holdout=None`.
 
+Both `pf.split` (`"stratified"` / `"random"`) and `holdout=` keep exact
+duplicate rows on one side, and the cross-validation prefit chooses keeps them
+in one fold, so a copy never scores its own twin.
+
 From the shell:
 
 ```bash
@@ -146,7 +150,14 @@ Ground rules the catalog follows:
 - **No group splitting without real groups.** ID-like columns and duplicates
   produce review items. Group-aware splitters are used only with `groups=`;
   `TimeSeriesSplit` only with `time_col=`. Both columns stay out of the features
-  unless `split_columns_as_features=True` (which adds a warning).
+  unless `split_columns_as_features=True` (which adds a warning). The one
+  exception: exact duplicate rows (all columns, target included) are always
+  kept together — on one side of the holdout and in one CV fold
+  (`pf.DuplicateAwareKFold`, which hashes the rows itself, so no `groups=` is
+  needed and repeated k-fold stays repeated). No row is removed; whether the
+  copies are the same record or legitimate repeats stays a review item. With
+  `groups=` your groups take precedence (a warning names copies that span
+  groups).
 - **Split precedence is explicit.** `time_col` turns off class stratification
   (the report says so); `groups` with classification uses
   `StratifiedGroupKFold`, which balances classes only approximately; `groups`
@@ -194,7 +205,9 @@ score, or an absolute `min_effect`). Significant but smaller differences are
   was verified (`built.model_kind` says which). `None` without an estimator.
 - `preprocessor` — the feature preprocessing alone. Feature scaling is an
   estimator-dependent default (`scale=False` turns it off), not a decision.
-- `cv`, `scoring`, `feature_columns`, `groups`, `sort_by`.
+- `cv`, `scoring`, `feature_columns`, `groups`, `sort_by`. When the data has
+  exact duplicates, `cv` is a `DuplicateAwareKFold` (a scikit-learn-compatible
+  splitter: `cross_validate(model, X, y, cv=built.cv)` needs no `groups=`).
 - `included`, `excluded` (with status and reason), `needs_estimator` (eligible
   estimator-level steps that need an estimator), `unsupported` (columns left
   out), `assumptions` still open.
@@ -267,9 +280,10 @@ including failures, are written to `benchmarks/results/<manifest>.json|md`;
 committed experiment section). Reports cite a rule's "detection pass rate on
 benchmark <manifest>: k/n checks".
 
-Current manifest `2026.11-2`: 20/20 cases pass. This is a detection pass rate on
-known-hazard fixtures — not a claim about real-world accuracy, nor about how
-often a decision improves a model.
+Current manifest `2026.11-3`: 21/21 cases pass, including a split check that no
+exact duplicate lands on both sides of the holdout or of any CV fold (expected
+overlap 0). This is a detection pass rate on known-hazard fixtures — not a claim
+about real-world accuracy, nor about how often a decision improves a model.
 
 ## Case studies
 
@@ -278,7 +292,7 @@ often a decision improves a model.
 | study | rule | before | after |
 |---|---|---|---|
 | California Housing, skewed target, log-transform (HGB) | `target_skew` | MAE 0.3125 | MAE 0.3074 (−1.6%) |
-| Breast Cancer + 20% duplicated rows, de-duplicate (RF) | `duplicate_rows` | CV accuracy 0.9736 | 0.9579 (1.57 pts of inflation) |
+| Breast Cancer + 20% duplicated rows (RF): old vs new CV | `duplicate_rows` | 0.1 splitter, copies straddle folds: CV accuracy 0.9702 | 0.2 duplicate-aware CV: 0.9604 (0.98 pts of inflation removed; de-duplicated data: 0.9649) |
 | Diabetes + injected leaked feature, remove it (linear) | `leakage_hint` (critical) | CV R² 0.9999 | 0.4892 |
 
 ## Scope and limitations
@@ -291,6 +305,12 @@ often a decision improves a model.
 - Column kinds and the task are inferred heuristically; check the schema table.
 - Experiments test one change at a time; interactions are not measured.
 - `groups` and `time_col` cannot be combined in v1.
+- Duplicates are matched exactly. Near-duplicates (a rounded value, one
+  differing column, an id column that makes copies distinct) are not detected
+  and can still straddle a split; pass `groups=` when rows share an entity.
+- With `time_col`, the holdout is the latest period and CV is
+  `TimeSeriesSplit`; exact duplicates are *not* kept together there (time order
+  wins), so a copy can sit on both sides. The duplicate review item says so.
 - Raw datetime, free-text and string-identifier columns are not encoded.
 
 Design notes: [ARCHITECTURE.md](https://github.com/hkln4/prefit/blob/main/ARCHITECTURE.md) · changes: [CHANGELOG.md](https://github.com/hkln4/prefit/blob/main/CHANGELOG.md) ·

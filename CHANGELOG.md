@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/); before 1.0, minor versions may
 change the public API.
 
+## 0.2.0 — 2026-11-03
+
+Exact duplicate rows no longer leak across splits. This changes which rows land
+in the holdout and in each CV fold whenever the data has exact duplicates, so
+scores on such data move (down, toward the honest value). Data without exact
+duplicates splits exactly as in 0.1.0 for the same seed.
+
+### Changed
+- `pf.split` (`"stratified"`, `"random"`) and `analyze(holdout=...)` treat
+  identical rows (all columns, target included) as one unit and keep them on
+  one side; class ratios and the holdout fraction are kept approximately.
+  `profile.holdout` records `duplicate_groups_kept_together` and the method says
+  "exact duplicates kept on one side"; `report.holdout(df)` re-derives the same
+  positions. With `groups=` the user's groups take precedence and a warning
+  names duplicates that span groups; `time_col=` is unchanged.
+- Rule `validation_split` v3: with exact duplicates in the dev rows (and no
+  groups / time_col), the CV step carries `duplicate_aware=True`; `verify` and
+  `export` build a `DuplicateAwareKFold` instead of the plain k-fold. The
+  decision title says "(exact duplicates kept in one fold)" and `describe()`
+  adds a line. Repeated k-fold and the corrected resampled t-test still apply.
+- Rule `duplicate_rows` v2: one procedural decision, "Keep exact duplicates on
+  one side of every split" (applied; no row is removed), and one review item,
+  "Decide whether duplicates are the same record or legitimate repeats".
+- The data-partition note says when duplicates were kept together.
+- The external-holdout overlap warning points to `pf.split`.
+
+### Added
+- `pf.DuplicateAwareKFold(n_splits, n_repeats, stratify, random_state)`: a
+  scikit-learn-compatible repeated (stratified) k-fold over sets of identical
+  rows. It hashes features + target itself, so no `groups=` is needed.
+- Benchmark manifest `2026.11-3`: case `duplicates_split_overlap` checks that
+  no exact duplicate lands on both sides of the holdout or of any CV fold.
+- Case study 2 compares the 0.1 and 0.2 splitters on Breast Cancer with 20%
+  duplicated rows.
+
+### Limitations
+- Only exact duplicates are matched; near-duplicates are not detected.
+- Under `time_col=`, exact duplicates are not kept together.
+
 ## 0.1.0 — 2026-11-01
 
 First release of **prefit** (`pip install prefit`, `import prefit as pf`), the

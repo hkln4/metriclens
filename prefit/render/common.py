@@ -140,8 +140,11 @@ def partition_note(report: Any) -> str:
         dev += f" (a seeded sample of {p.sampling['of_rows']:,})"
     base = f"Every statistic, figure, decision and experiment in this report comes from {dev}."
     if h.get("used"):
+        dup = h.get("duplicate_groups_kept_together")
+        dup_txt = (f" {dup:,} set(s) of exact duplicate rows were kept whole, so no copy sits on both sides."
+                   if dup else "")
         return (f"{base} The internal holdout ({h['n_holdout']:,} rows, {h['method']}) was set aside before "
-                "profiling and was never read; get it with report.holdout(df) and use it once, at the end.")
+                f"profiling and was never read; get it with report.holdout(df) and use it once, at the end.{dup_txt}")
     if ext:
         ov = ext.get("overlap_rows")
         ov_txt = "" if ov is None else (f" Exact row overlap with the development data: {ov} row(s)." if ov

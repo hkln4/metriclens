@@ -43,6 +43,7 @@ def verification_cv(report: Any, y: pd.Series, budget: Budget, seed: int) -> tup
     step = next(d.step for d in report.decisions if d.id == "d.cv" and d.step is not None)
     params = dict(step.params)
     name = params.pop("name")
+    dup_aware = bool(params.pop("duplicate_aware", False))
     if name == "TimeSeriesSplit":
         return ms.TimeSeriesSplit(**params), "time_series", f"TimeSeriesSplit(n_splits={params['n_splits']})"
     if name in ("GroupKFold", "StratifiedGroupKFold"):
@@ -51,7 +52,13 @@ def verification_cv(report: Any, y: pd.Series, budget: Budget, seed: int) -> tup
     if report.task is Task.CLASSIFICATION:
         k = int(max(2, min(k, y.value_counts().min())))  # the dev subsample may have fewer minority rows
     repeats = int(params.get("n_repeats", budget.n_repeats))
-    cls = ms.RepeatedStratifiedKFold if name in ("StratifiedKFold", "RepeatedStratifiedKFold") else ms.RepeatedKFold
+    stratified = name in ("StratifiedKFold", "RepeatedStratifiedKFold")
+    if dup_aware:
+        from .splitters import DuplicateAwareKFold
+
+        cv = DuplicateAwareKFold(n_splits=k, n_repeats=repeats, stratify=stratified, random_state=seed)
+        return (cv, "repeated_kfold", f"{cv!r} — the export splitter, repeated; exact duplicates kept in one fold")
+    cls = ms.RepeatedStratifiedKFold if stratified else ms.RepeatedKFold
     return (cls(n_splits=k, n_repeats=repeats, random_state=seed), "repeated_kfold",
             f"{cls.__name__}(n_splits={k}, n_repeats={repeats}) — the export splitter, repeated")
 

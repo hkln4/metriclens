@@ -89,6 +89,8 @@ class ExportResult:
                  f"scoring: {list(self.scoring)}",
                  "estimator-dependent default: " + ("StandardScaler on numeric features (scale=False to turn off)"
                                                     if self.scaled else "no feature scaling (scale=False)")]
+        if type(self.cv).__name__ == "DuplicateAwareKFold":
+            lines.append("cv keeps exact duplicate rows (features + target) in one fold; no groups= needed")
         if self.groups:
             lines.append(f"groups: pass groups=df['{self.groups}'] to cross_validate")
         if self.sort_by:
@@ -263,6 +265,11 @@ def build_cv(step: Step | None) -> Any:
         return model_selection.KFold(5, shuffle=True, random_state=0)
     params = dict(step.params)
     name = params.pop("name")
+    if params.pop("duplicate_aware", False):
+        from .splitters import DuplicateAwareKFold
+
+        return DuplicateAwareKFold(n_splits=params["n_splits"], n_repeats=params.get("n_repeats", 1),
+                                   stratify="Stratified" in name, random_state=params.get("random_state", 0))
     return getattr(model_selection, name)(**params)
 
 

@@ -16,8 +16,9 @@ from .llm.config import LLMConfig
 from .llm.provider import Provider
 from .posttrain import ReviewReport
 from .report.model import Report
+from .splitters import DuplicateAwareKFold
 
 __all__ = [
     "split", "analyze", "load_report", "review", "Report", "ReviewReport", "Budget", "ProfileOptions", "LLMConfig", "Provider",
-    "Task", "Severity", "ColumnKind", "DecisionClass", "DecisionStatus", "__version__",
+    "DuplicateAwareKFold", "Task", "Severity", "ColumnKind", "DecisionClass", "DecisionStatus", "__version__",
 ]

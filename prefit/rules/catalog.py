@@ -6,7 +6,8 @@ Conventions every rule follows:
 - data-modifying actions are never PROCEDURAL — they are REVIEW items, or
   CONDITIONAL (testable) / CONTEXTUAL (needs the user) decisions;
 - "leakage" is only ever a *hint* that requires manual review;
-- GroupKFold-style splitting is only used when the user supplies real groups.
+- GroupKFold-style splitting is only used when the user supplies real groups;
+  exact duplicate rows are the one built-in unit, kept on one side of every split.
 """
 
 from __future__ import annotations
@@ -46,8 +47,8 @@ def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                finding_ids=[f], evidence_ids=[e])
 
 
-@rule("validation_split", "2", thresholds={"small_data_rows": 1000},
-      description="Choose the cross-validation splitter from task, groups and time.")
+@rule("validation_split", "3", thresholds={"small_data_rows": 1000},
+      description="Choose the cross-validation splitter from task, groups, time and exact duplicates.")
 def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     n = p.dataset.n_rows
     ev = [out.ev("dataset.n_rows", "Rows profiled (dev)", n, "row count after holdout/sampling")]
@@ -83,18 +84,31 @@ def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     if small and not ctx.time_col and not ctx.groups:
         why += f"; repeated because {n} rows give noisy single-split estimates"
     spec = f"{name}({', '.join(f'{a}={b}' for a, b in params.items())})"
+    dup = p.dataset.duplicate_rows
+    dup_aware = bool(dup) and not ctx.time_col and not ctx.groups
+    title = f"Cross-validate with {name}"
+    if dup_aware:
+        ev.append(out.ev("dataset.duplicates", "Exact duplicate rows", dup,
+                         f"exact full-row duplicates incl. target ({p.dataset.duplicate_fraction:.2%})"))
+        title += " (exact duplicates kept in one fold)"
+        why += (f"; the {dup} exact duplicate rows are kept in one fold (rows hashed on features + target), "
+                "so a copy never validates its twin")
+        spec += ", keeping exact duplicates in one fold (prefit.DuplicateAwareKFold)"
     if ctx.time_col or ctx.groups or name.startswith("Repeated"):
         verif = f"Verification experiments and baselines use the same splitter ({spec})."
     else:
         verif = (f"Verification experiments and baselines use the same splitter repeated "
-                 f"{ctx.n_repeats}x (Repeated{name}), for statistical power.")
-    out.decision("cv", f"Cross-validate with {name}", DecisionClass.PROCEDURAL, "split",
-                 f"Use {spec}. {verif}", why.capitalize() + ".",
+                 f"{ctx.n_repeats}x ({'DuplicateAwareKFold' if dup_aware else f'Repeated{name}'}), "
+                 "for statistical power.")
+    if dup_aware:
+        params["duplicate_aware"] = True
+    why = why[:1].upper() + why[1:] + "."
+    out.decision("cv", title, DecisionClass.PROCEDURAL, "split", f"Use {spec}. {verif}", why,
                  risk=("Without groups or a time column, rows that belong together (same patient, "
-                       "same customer, later in time) can still leak across folds."
+                       "same customer, later in time, near-duplicates) can still leak across folds."
                        if not (ctx.groups or ctx.time_col) else ""),
                  evidence_ids=ev, step=Step(kind="cv", params={"name": name, **params}),
-                 do=f"Use {spec}.", why=why.capitalize() + ".")
+                 do=f"Use {spec}.", why=why)
     split_cols = [c for c in (ctx.groups if ctx.groups != "<array>" else None, ctx.time_col) if c]
     if split_cols and not ctx.split_columns_as_features:
         e = out.ev("columns.split", "Split columns", split_cols, "groups= / time_col= arguments", columns=split_cols)
@@ -258,7 +272,7 @@ def infinite_values(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  do="Trace the source of the infinities and fix them upstream.")
 
 
-@rule("duplicate_rows", "1", thresholds={"warn_fraction": 0.01})
+@rule("duplicate_rows", "2", thresholds={"warn_fraction": 0.01})
 def duplicate_rows(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     d = p.dataset
     if not d.duplicate_rows:
@@ -268,14 +282,33 @@ def duplicate_rows(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     sev = Severity.WARN if d.duplicate_fraction >= 0.01 else Severity.INFO
     f = out.finding("duplicate_rows", sev, Trigger.FIRED,
                     f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}).", [e])
-    hint = ("" if ctx.groups else " If you have an entity id, pass it as groups= so copies stay on one side of each split.")
-    out.decision("duplicate_rows", "Review duplicates before splitting", DecisionClass.REVIEW, "data_review",
-                 "Find out whether duplicates are the same real-world record (collection artefact) or legitimate "
-                 "repeats." + hint,
-                 "Copies on both sides of a split leak the answer and inflate validation scores.",
-                 risk="Dropping legitimate repeats changes the data distribution; keeping artefacts inflates scores. "
-                      "prefit does not decide this for you.",
-                 finding_ids=[f], evidence_ids=[e], why=f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}) can land on both sides of a split.", do="Decide whether they are the same record or legitimate repeats.")
+    if ctx.groups or ctx.time_col:
+        by = "your groups" if ctx.groups else f"time order ('{ctx.time_col}')"
+        hint = f" The split follows {by}, not the duplicates, so copies can still land on both sides."
+    else:
+        out.decision("duplicate_split", "Keep exact duplicates on one side of every split",
+                     DecisionClass.PROCEDURAL, "split",
+                     "Identical rows (features + target) are one unit: the holdout and every CV fold keep them "
+                     "together. No row is removed.",
+                     "A copy on the other side of a split scores its own twin and inflates validation scores.",
+                     risk="Near-duplicates (a rounding or one-column difference) are not caught; an id column "
+                          "makes copies distinct, so pass groups= if rows share an entity.",
+                     finding_ids=[f], evidence_ids=[e],
+                     why=f"{d.duplicate_rows} exact duplicate rows would otherwise score their own twins.",
+                     do="Keep identical rows together in the holdout and in every CV fold.")
+        hint = ""
+    out.decision("duplicate_rows", "Decide whether duplicates are the same record or legitimate repeats",
+                 DecisionClass.REVIEW, "data_review",
+                 "Find out whether duplicates are the same real-world record (collection artefact: drop the extra "
+                 "copies) or legitimate repeats (keep them)." + hint,
+                 "Splitting keeps exact copies together, but they still weigh twice in training and in every "
+                 "score; whether they should depends on where they come from.",
+                 risk="Dropping legitimate repeats changes the data distribution; keeping artefacts over-weights "
+                      "them. prefit does not decide this for you.",
+                 finding_ids=[f], evidence_ids=[e],
+                 why=f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}) weigh twice in training "
+                     "and scoring.",
+                 do="Decide whether they are the same record or legitimate repeats.")
 
 
 @rule("conflicting_duplicates", "1", thresholds={"groups": 1})

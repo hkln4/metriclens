@@ -12,7 +12,8 @@ pf.split(df, ...) -> dev_df, test_df            (explicit; same splitter as hold
 dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    │
    ▼  guard.py ─ validate inputs (misspelled target, single-class target, groups+time…);
-   │             optional internal holdout (only with holdout=…), set aside before profiling
+   │             optional internal holdout (only with holdout=…), set aside before profiling;
+   │             duplicate-aware: exact duplicate rows move as one unit (unless groups/time_col)
    ▼  fingerprint.py ─ SHA-256 digests of the input frame -> manifest (no data)
    ▼  profiling/ ─ dev rows only, seeded sample above ProfileOptions.max_rows
    │     kinds.py   column kind + reason (numeric, categorical, boolean,
@@ -34,6 +35,7 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    ├─ Report.holdout(df)                  fingerprint check, re-derives the internal holdout
    ├─ Report.register_external_holdout()  metadata + exact-overlap count, never profiled
    ├─ Report.export()                     export.py: model recipe + preprocessor + CV + scoring
+   │                                      (splitters.py: DuplicateAwareKFold when the dev rows have exact duplicates)
    ├─ Report.interpret()  llm/: optional, schema-constrained interpretation
    ├─ Report.to_html()    render/: single-file report
    └─ pf.review(...)      posttrain.py: assumptions vs. actual errors
@@ -60,7 +62,9 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
 2. **Data-modifying actions are never procedural.** Dropping duplicates, rows
    or columns can be a collection artefact or legitimate data; only the user or
    an experiment can decide. The one exception is constant columns, which carry
-   no information. Raw datetime/text/string-id columns are left out of the
+   no information. Keeping exact duplicates on one side of every split *is*
+   procedural: it changes how rows are assigned to folds, not which rows exist;
+   whether to drop the copies stays a review item. Raw datetime/text/string-id columns are left out of the
    export because v1 cannot encode them — a capability limit reported as a
    review item, not a judgement that they are uninformative.
 3. **The data cannot choose the metric.** It can say which metrics mislead

@@ -56,7 +56,7 @@ def test_every_finding_and_decision_cites_existing_evidence(messy_df):
 
 def test_procedural_decisions_never_modify_data_content(messy_df):
     rep = pf.analyze(messy_df, "y")
-    allowed = {"d.cv", "d.holdout", "d.fit_in_fold", "d.drop_constant"}
+    allowed = {"d.cv", "d.holdout", "d.fit_in_fold", "d.drop_constant", "d.duplicate_split"}
     for d in rep.decisions:
         if d.cls is DecisionClass.PROCEDURAL:
             assert d.id in allowed, d.id
@@ -105,6 +105,38 @@ def test_duplicates_are_review_items():
 
     rep = pf.analyze(duplicates(), "y")
     assert rep.decision("d.duplicate_rows").cls is DecisionClass.REVIEW
+    assert "same record or legitimate repeats" in rep.decision("d.duplicate_rows").title
+
+
+def test_duplicates_are_kept_together_without_removing_rows():
+    from fixtures import duplicates
+
+    rep = pf.analyze(duplicates(), "y")
+    d = rep.decision("d.duplicate_split")
+    assert d.cls is DecisionClass.PROCEDURAL and d.status is DecisionStatus.APPLIED and d.step is None
+    assert "No row is removed" in d.action
+    cv = rep.decision("d.cv")
+    assert cv.step.params["duplicate_aware"] is True
+    assert cv.title.endswith("(exact duplicates kept in one fold)")
+    assert "DuplicateAwareKFold" in cv.action and "kept in one fold" in cv.rationale
+
+
+def test_duplicates_with_groups_or_time_are_not_forced_together():
+    from fixtures import duplicates
+
+    df = duplicates()
+    for kw in ({"groups": pd.Series(np.arange(len(df)) // 3, index=df.index)},
+               {"time_col": "t"}):
+        frame = df.assign(t=pd.date_range("2020", periods=len(df), freq="h")) if "time_col" in kw else df
+        rep = pf.analyze(frame, "y", **kw)
+        assert not any(d.id == "d.duplicate_split" for d in rep.decisions)
+        assert "duplicate_aware" not in rep.decision("d.cv").step.params
+        assert "can still land on both sides" in rep.decision("d.duplicate_rows").action
+
+
+def test_cv_without_duplicates_is_unchanged(imb_df):
+    params = pf.analyze(imb_df, "y").decision("d.cv").step.params
+    assert params == {"name": "StratifiedKFold", "n_splits": 5, "random_state": 0, "shuffle": True}
 
 
 def test_class_weight_not_applicable_for_estimator_without_it(imb_df):

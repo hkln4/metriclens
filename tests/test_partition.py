@@ -125,3 +125,96 @@ def test_single_class_target_is_rejected():
     df = pd.DataFrame({"a": np.arange(100.0), "y": ["yes"] * 100})
     with pytest.raises(ValueError, match="single value"):
         pf.analyze(df, "y")
+
+
+# --------------------------------------------------------------------------- #
+# Exact duplicates stay on one side
+# --------------------------------------------------------------------------- #
+
+def _dup_df():
+    from fixtures import duplicates
+
+    return duplicates()  # 3000 rows + 300 exact copies
+
+
+def _shared_hashes(a, b):
+    from prefit.fingerprint import row_hashes
+
+    return set(row_hashes(a)) & set(row_hashes(b))
+
+
+@pytest.mark.parametrize("strategy", ["stratified", "random"])
+def test_split_keeps_exact_duplicates_on_one_side(strategy):
+    df = _dup_df()
+    dev, test = pf.split(df, "y", test_size=0.2, strategy=strategy, random_state=3)
+    assert not _shared_hashes(dev, test)
+    assert len(dev) + len(test) == len(df)
+    assert abs(len(test) / len(df) - 0.2) < 0.01
+    if strategy == "stratified":
+        assert abs(test.y.mean() - df.y.mean()) < 0.01
+
+
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_internal_holdout_keeps_exact_duplicates_on_one_side(task):
+    df = _dup_df()
+    rep = pf.analyze(df, "y", task=task, holdout=0.2, seed=5)
+    dev, hold = rep.holdout(df)
+    assert not _shared_hashes(dev, hold)
+    h = rep.details.profile.holdout
+    assert h["duplicate_groups_kept_together"] == 300
+    assert "exact duplicates kept on one side" in h["method"]
+    assert "300 set(s) of exact duplicate rows were kept whole" in rep.to_text()
+
+
+def test_duplicate_aware_split_is_seeded():
+    df = _dup_df()
+    a = pf.split(df, "y", random_state=11)[1].index
+    b = pf.split(df, "y", random_state=11)[1].index
+    c = pf.split(df, "y", random_state=12)[1].index
+    assert list(a) == list(b) and list(a) != list(c)
+
+
+@pytest.mark.parametrize("fixture,task,digests", [
+    ("imbalanced", "classification", {0: "5435928856ab7ef3", 7: "9e8333213392abdb"}),
+    ("clean_classification", "classification", {0: "659e0a3ef141fda4", 7: "b4b71ae79ac7be0c"}),
+    ("clean_regression", "regression", {0: "f19d06da0d13bdb8", 7: "a7d606975ae85d5c"}),
+])
+def test_holdout_without_duplicates_matches_0_1_0(fixture, task, digests):
+    """No duplicates -> the row-level path, bit-for-bit what prefit 0.1.0 returned."""
+    import hashlib
+
+    import fixtures
+
+    from prefit.enums import Task
+    from prefit.guard import reserve_holdout
+
+    df = getattr(fixtures, fixture)()
+    for seed, digest in digests.items():
+        _, hold, info = reserve_holdout(df, "y", Task(task), 0.2, None, None, seed)
+        assert hashlib.sha256(hold.astype(np.int64).tobytes()).hexdigest()[:16] == digest
+        assert "duplicate_groups_kept_together" not in info
+
+
+def test_rederived_holdout_matches_analyze_with_duplicates(tmp_path):
+    df = _dup_df()
+    rep = pf.analyze(df, "y", holdout=0.2, seed=2)
+    path = tmp_path / "r.json"
+    rep.to_json(str(path))
+    loaded = pf.load_report(str(path))
+    assert loaded._holdout_positions is None
+    assert list(loaded.holdout(df)[1].index) == list(rep.holdout(df)[1].index)
+    assert list(pf.split(df, "y", random_state=2)[1].index) == list(rep.holdout(df)[1].index)
+
+
+def test_groups_win_over_duplicates_with_a_warning():
+    df = _dup_df()
+    g = np.arange(len(df)) // 10  # each copy (rows 3000+) falls in a different group than its original
+    with pytest.warns(UserWarning, match="exact duplicate rows span more than one of your groups"):
+        dev, test = pf.split(df.assign(g=g), "y", strategy="group", groups="g")
+    assert set(dev.g).isdisjoint(test.g)
+
+
+def test_time_split_ignores_duplicates():
+    df = _dup_df().assign(t=pd.date_range("2020", periods=3300, freq="h"))
+    dev, test = pf.split(df, "y", strategy="time", time_col="t")
+    assert test.t.min() > dev.t.max()

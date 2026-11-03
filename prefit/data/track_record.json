@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2026.11-2",
+  "manifest_version": "2026.11-3",
   "rules": {
     "target_skew": {
       "checks": 2,
@@ -10,8 +10,8 @@
       "passed": 8
     },
     "duplicate_rows": {
-      "checks": 6,
-      "passed": 6
+      "checks": 7,
+      "passed": 7
     },
     "id_like_columns": {
       "checks": 8,
@@ -40,6 +40,14 @@
     "class_imbalance": {
       "checks": 5,
       "passed": 5
+    },
+    "holdout_split": {
+      "checks": 1,
+      "passed": 1
+    },
+    "cv_split": {
+      "checks": 1,
+      "passed": 1
     },
     "temporal_order": {
       "checks": 1,
