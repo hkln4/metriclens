@@ -43,8 +43,25 @@ def run_case(case) -> dict:
     for rid in case.uncertain:
         checks.append({"rule": rid, "expect": "uncertain", "ok": by_rule.get(rid) == {"uncertain"},
                        "got": sorted(by_rule.get(rid, set())) or ["none"]})
+    if case.no_split_overlap:
+        for name, got in split_overlaps(rep, df).items():
+            checks.append({"rule": name, "expect": "overlap 0", "ok": got == 0, "got": [f"overlap {got}"]})
     return {"case": case.name, "source": case.source, "rows": len(df), "task": rep.task.value,
             "ok": all(c["ok"] for c in checks), "checks": checks}
+
+
+def split_overlaps(rep, df) -> dict[str, int]:
+    """Row hashes found on both sides of the holdout split, and of each exported CV fold (summed)."""
+    from prefit.export import build_cv
+    from prefit.fingerprint import row_hashes
+
+    dev, hold = rep.holdout(df)
+    out = {"holdout_split": len(set(row_hashes(dev)) & set(row_hashes(hold)))}
+    cv = build_cv(rep.decision("d.cv").step)
+    h = row_hashes(dev)
+    X, y = dev.drop(columns=rep.target), dev[rep.target]
+    out["cv_split"] = sum(len(set(h[tr]) & set(h[te])) for tr, te in cv.split(X, y))
+    return out
 
 
 def verify_real() -> list[dict]:
@@ -79,8 +96,10 @@ def main() -> int:
     payload = {
         "manifest_version": MANIFEST_VERSION, "prefit_version": pf.__version__,
         "python": platform.python_version(),
-        "protocol": ("Each case runs pf.analyze with default options and seed 0. A check passes when the rule's "
-                     "finding matches the expectation: fired / none / uncertain (near threshold)."),
+        "protocol": ("Each case runs pf.analyze with default options (plus the case's kwargs) and seed 0. A check "
+                     "passes when the rule's finding matches the expectation: fired / none / uncertain (near "
+                     "threshold). Split checks (holdout_split, cv_split) count exact row hashes found on both "
+                     "sides of the internal holdout and of every exported CV fold; they pass at 0."),
         "cases": results, "rules": rules,
     }
     out_dir = ROOT / "benchmarks" / "results"

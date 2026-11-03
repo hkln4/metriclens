@@ -56,6 +56,10 @@ def split(
         "random"      plain random rows
         "group"       whole groups (needs `groups=` column) on one side
         "time"        the latest `test_size` share by `time_col` becomes the test set
+    With "stratified" and "random", exact duplicates stay on one side: identical
+    rows (target included) move together, so a copy never tests its twin.
+    "group" keeps your groups whole instead (and warns when copies span groups);
+    "time" ignores duplicates.
     Pass dev_df to `pf.analyze` and keep test_df untouched until the end;
     `report.register_external_holdout(test_df, dev_df=dev_df)` records it.
     """
@@ -116,7 +120,9 @@ def analyze(
     time_col : column defining time order; switches to TimeSeriesSplit.
     holdout : None (default) analyzes all of `df`. A fraction (e.g. 0.2) asks
         prefit to set that share aside *before* profiling; get it back with
-        `report.holdout(df)`.
+        `report.holdout(df)`. Exact duplicates stay on one side (unless groups
+        or time_col define the split), and cross-validation keeps them in one
+        fold.
     split_columns_as_features : by default the groups / time_col columns are
         kept out of the model features; True includes them (with a warning).
     context : free-text description of the application (used by the LLM layer).
@@ -406,7 +412,7 @@ def _register_external_holdout(report: Report, holdout_df: Any, dev_df: Any = No
         if overlap:
             warnings.warn(f"Exact row overlap detected between development and {name} ({overlap} rows). "
                           "This may inflate evaluation; inspect whether the duplicated observations are legitimate "
-                          "repeats.", stacklevel=3)
+                          "repeats. Use pf.split, which keeps exact duplicates on one side.", stacklevel=3)
     manifest = evolve(_next_revision(m, "register_external_holdout", name=name, n_rows=fp["n_rows"],
                                      overlap_rows=meta["overlap_rows"]), external_holdout=meta)
     return _rederive(report, ctx_state=report.details.context, manifest=manifest, estimator=report._estimator)

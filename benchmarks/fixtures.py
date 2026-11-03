@@ -4,6 +4,8 @@ Each case is a deterministic dataset generator plus expectations:
   must_fire     rule ids that must produce a finding (trigger fired)
   must_not_fire rule ids that must produce no finding at all
   uncertain     rule ids that must produce a finding marked near-threshold
+  no_split_overlap  no row hash may sit on both sides of the internal holdout
+                    or of any exported CV fold (expected overlap: 0)
 Synthetic cases inject one known hazard into otherwise clean data, so a rule's
 false positives show up on the clean cases and its misses on the injected ones.
 Real-data cases use datasets bundled with scikit-learn (no download).
@@ -20,7 +22,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-MANIFEST_VERSION = "2026.11-2"
+MANIFEST_VERSION = "2026.11-3"
 
 
 @dataclass
@@ -33,6 +35,7 @@ class Case:
     must_fire: list[str] = field(default_factory=list)
     must_not_fire: list[str] = field(default_factory=list)
     uncertain: list[str] = field(default_factory=list)
+    no_split_overlap: bool = False
     source: str = "synthetic"
 
 
@@ -182,6 +185,8 @@ CASES: list[Case] = [
     Case("leaky_categorical_classification", leaky_categorical_classification, "y", "classification",
          must_fire=["leakage_hint"]),
     Case("duplicates", duplicates, "y", "classification", must_fire=["duplicate_rows"]),
+    Case("duplicates_split_overlap", duplicates, "y", "classification", kwargs={"holdout": 0.2},
+         must_fire=["duplicate_rows"], no_split_overlap=True),
     Case("id_column", id_column, "y", "regression", must_fire=["id_like_columns"], must_not_fire=["leakage_hint"]),
     Case("integer_feature_not_id", integer_feature_not_id, "y", "regression", must_not_fire=["id_like_columns"]),
     Case("datetime_column", datetime_column, "y", "regression", must_fire=["temporal_order"],

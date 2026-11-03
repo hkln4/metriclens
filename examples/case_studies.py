@@ -12,6 +12,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+from sklearn import model_selection
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.datasets import fetch_california_housing, load_breast_cancer, load_diabetes
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestClassifier
@@ -100,6 +101,11 @@ def case1() -> dict:
 # --------------------------------------------------------------------------- #
 # Case 2 — Duplicate-row leakage (Breast Cancer)
 # --------------------------------------------------------------------------- #
+def _straddling(cv, X, y, hashes) -> int:
+    """Rows whose exact copy sits on the other side of a fold boundary (summed over folds)."""
+    return sum(int(np.isin(hashes[te], hashes[tr]).sum()) for tr, te in cv.split(X, y))
+
+
 def case2() -> dict:
     df = load_breast_cancer(as_frame=True).frame
     rng = np.random.default_rng(0)
@@ -110,27 +116,39 @@ def case2() -> dict:
     fnd = _finding(report, "duplicate_rows")
     if fnd is None:
         _stop("case 2: expected 'duplicate_rows' to fire on the corrupted copy.")
+    step = report.decision("d.cv").step
+    if not step.params.get("duplicate_aware"):
+        _stop("case 2: expected the CV decision to keep exact duplicates in one fold.")
 
     model = RandomForestClassifier(n_estimators=200, random_state=0)
-    cv = KFold(n_splits=5, shuffle=True, random_state=0)
-
     Xc, yc = corrupt.drop(columns="target"), corrupt["target"]
-    acc_naive = cross_val_score(model, Xc, yc, cv=cv, scoring="accuracy").mean()
+    hashes = pd.util.hash_pandas_object(corrupt, index=False).to_numpy()
 
-    clean = corrupt.drop_duplicates().reset_index(drop=True)  # follow the rec
-    Xk, yk = clean.drop(columns="target"), clean["target"]
-    acc_honest = cross_val_score(model, Xk, yk, cv=cv, scoring="accuracy").mean()
-    gap = (acc_naive - acc_honest) * 100
+    # old (prefit 0.1): the same splitter, row by row; copies can straddle folds
+    sk = {k: v for k, v in step.params.items() if k not in ("name", "duplicate_aware")}
+    cv_old = getattr(model_selection, step.params["name"])(**sk)
+    # new (prefit 0.2): report.export().cv keeps exact duplicates in one fold
+    cv_new = report.export().cv
+    acc_old = cross_val_score(model, Xc, yc, cv=cv_old, scoring="accuracy").mean()
+    acc_new = cross_val_score(model, Xc, yc, cv=cv_new, scoring="accuracy").mean()
+
+    # reference: the review item resolved by de-duplicating (the copies are artefacts here)
+    clean = corrupt.drop_duplicates().reset_index(drop=True)
+    acc_clean = cross_val_score(model, clean.drop(columns="target"), clean["target"], cv=cv_old,
+                                scoring="accuracy").mean()
 
     _table(
-        "CASE 2 — Duplicate-row leakage (Breast Cancer)",
-        f"rule fired: {fnd.rule_id}  evidence={_evidence(report, fnd)}",
-        [("CV accuracy", f"{acc_naive:.4f}", f"{acc_honest:.4f}"),
-         ("rows", str(len(corrupt)), str(len(clean)))],
-        "naive (dupes)", "de-duplicated")
-    print(f"\nInflation from duplicate leakage: {gap:+.2f} accuracy points")
-    return {"acc_naive": acc_naive, "acc_honest": acc_honest,
-            "gap_points": gap, "evidence": _evidence(report, fnd)}
+        "CASE 2 — Duplicate-row leakage (Breast Cancer + 20% copies)",
+        f"rule fired: {fnd.rule_id}  evidence={_evidence(report, fnd)}\n"
+        f"old: {type(cv_old).__name__} row by row · new: {type(cv_new).__name__} (report.export().cv)",
+        [("CV accuracy", f"{acc_old:.4f}", f"{acc_new:.4f}"),
+         ("copies across a fold", str(_straddling(cv_old, Xc, yc, hashes)),
+          str(_straddling(cv_new, Xc, yc, hashes)))],
+        "old (0.1)", "new (0.2)")
+    print(f"\nInflation removed by the duplicate-aware CV: {(acc_old - acc_new) * 100:+.2f} accuracy points")
+    print(f"Reference, de-duplicated data ({len(clean)} rows): CV accuracy {acc_clean:.4f}")
+    return {"acc_old": acc_old, "acc_new": acc_new, "acc_clean": acc_clean,
+            "gap_points": (acc_old - acc_new) * 100, "evidence": _evidence(report, fnd)}
 
 
 # --------------------------------------------------------------------------- #
@@ -177,7 +195,7 @@ if __name__ == "__main__":
           f"({r1['rel_improvement_pct']:+.1f}%); tails-dominate warning "
           f"{ {True:'held',False:'did not hold',None:'n/a'}[r1['held_naive']] } "
           f"naive vs { {True:'held',False:'did not hold',None:'n/a'}[r1['held_guided']] } guided")
-    print(f"2. Duplicate leak: accuracy {r2['acc_naive']:.4f} -> {r2['acc_honest']:.4f} "
-          f"({r2['gap_points']:+.2f} pts inflation)")
+    print(f"2. Duplicate leak: CV accuracy {r2['acc_old']:.4f} (0.1 splitter) -> {r2['acc_new']:.4f} "
+          f"(0.2, duplicate-aware; {r2['gap_points']:+.2f} pts inflation removed); de-duplicated {r2['acc_clean']:.4f}")
     print(f"3. Target leak   : R^2 {r3['r2_leak']:.4f} -> {r3['r2_honest']:.4f} "
           f"({r3['gap_points']:+.1f} pts inflation)")
