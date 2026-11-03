@@ -276,3 +276,29 @@ def test_llm_keeps_raw_response_and_what_was_dropped(messy_df):
     system = FakeProvider(resp)
     rep.interpret(pf.LLMConfig(provider=system))
     assert "task_dependent" in system.calls[0][0]
+
+
+def test_closed_review_items_reach_the_llm_with_their_note():
+    from fixtures import duplicates
+    from test_llm import FakeProvider
+
+    note = "same records entered twice; kept, splits keep copies together"
+    rep = pf.analyze(duplicates(), "y", context="screening").resolve("d.duplicate_rows", note)
+
+    d = next(x for x in rep.llm_payload()["decisions"] if x["id"] == "d.duplicate_rows")
+    assert d["status"] == "reviewed" and d["closed_by_user"] is True and d["user_note"] == note
+    open_items = [x for x in pf.analyze(duplicates(), "y").llm_payload()["decisions"] if "closed_by_user" in x]
+    assert open_items == []
+
+    # the note is free text: it follows the same rule as the context
+    hidden = rep.llm_payload(pf.LLMConfig(share_column_names=False))
+    assert any(x.get("closed_by_user") for x in hidden["decisions"])
+    assert note not in json.dumps(hidden)
+    no_ctx = rep.llm_payload(pf.LLMConfig(include_context=False))
+    assert note not in json.dumps(no_ctx) and any(x.get("closed_by_user") for x in no_ctx["decisions"])
+
+    fake = FakeProvider({"summary": "ok"})
+    out = rep.interpret(pf.LLMConfig(provider=fake)).details.llm
+    system, user = fake.calls[0]
+    assert "closed_by_user" in system and note in user
+    assert out.disclosure["review notes sent"] == 1

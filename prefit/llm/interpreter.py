@@ -33,6 +33,9 @@ Every number was computed by code and is correct. Rules:
 - You may suggest an answer to an open question only if user_context clearly supports it; otherwise omit it.
 - If task_confirmed is false, the task is only inferred: items marked "task_dependent": true exist only under that
   guess. Do not build priorities or advice on them; say that the task must be confirmed first.
+- Decisions marked "closed_by_user": true are review items the user has already decided (their user_note, when
+  present, says what and why). Do not present them as open, ask about them again, or advise a different choice;
+  you may restate the user's decision.
 Respond with ONE JSON object and nothing else:
 {"summary": str (<= 120 words),
  "priorities": [{"text": str, "evidence_ids": [str], "decision_ids": [str]}],

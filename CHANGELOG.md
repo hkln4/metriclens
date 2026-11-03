@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/); before 1.0, minor versions may
 change the public API.
 
+## 0.3.1 — 2026-11-03
+
+### Fixed
+- A review item closed with `report.resolve` reached the LLM only as status
+  `reviewed`, without the user's note, while its action text still said "Record
+  what you decide"; the model then presented the decision as open (found by the
+  Red Wine Quality guide). The payload now marks such items `closed_by_user`
+  and carries the note as `user_note` under the same rule as the free-text
+  context (`include_context=True` and column names shared). The prompt tells
+  the model not to reopen them, and the disclosure counts the notes sent.
+
 ## 0.3.0 — 2026-11-03
 
 Feedback from the Red Wine Quality guide on Kaggle, each item verified on that
