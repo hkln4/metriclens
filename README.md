@@ -275,7 +275,9 @@ are marked manual-review. Claims that cite unknown evidence or decision ids are
 dropped; `details.llm.dropped` says what was dropped and why, and
 `details.llm.raw_response` keeps the reply exactly as received. While the task is
 unconfirmed, the payload marks task-dependent items and the prompt tells the
-model not to build advice on them. With `share_column_names=False` columns are aliased and
+model not to build advice on them. Review items you closed with `resolve` are
+marked as closed, with your note (sent under the same rule as `context=`), so the
+model does not reopen them. With `share_column_names=False` columns are aliased and
 free-text messages are withheld; the report lists exactly what was sent. The
 free-text `context=` never changes a decision by itself. Without an LLM the
 report is complete.
