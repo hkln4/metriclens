@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..enums import Severity
+from ..frozen import evolve
 from ..profiling.profile import DataProfile
 from ..report.model import Decision, Evidence, Finding, MetricPlan, Question
 from . import catalog  # noqa: F401  (importing registers every rule)
@@ -37,13 +38,22 @@ def rules() -> list[Rule]:
 
 def run_rules(profile: DataProfile, ctx: RuleContext) -> RuleOutput:
     out = Emitter()
+    task_specific: tuple[set[str], set[str]] = (set(), set())  # finding ids, decision ids
     for r in CATALOG:
         if r.tasks is not None and profile.task not in r.tasks:
             continue
         out.rule = r
+        nf, nd = len(out.findings), len(out.decisions)
         r.fn(profile, ctx, out)
+        if r.tasks is not None:
+            task_specific[0].update(f.id for f in out.findings[nf:])
+            task_specific[1].update(d.id for d in out.decisions[nd:])
     out.rule = Rule("metric_policy", "1", lambda *a: None, {}, None, "")
+    nd = len(out.decisions)
     plan = metric_policy(profile, ctx, out, {f.id for f in out.findings})
+    task_specific[1].update(d.id for d in out.decisions[nd:])  # metric options follow the task
+    out.findings = [evolve(f, task_dependent=True) if f.id in task_specific[0] else f for f in out.findings]
+    out.decisions = [evolve(d, task_dependent=True) if d.id in task_specific[1] else d for d in out.decisions]
 
     # critical first; sorted() is stable, so catalog order breaks ties
     findings = sorted(out.findings, key=lambda f: _SEVERITY_ORDER[f.severity])

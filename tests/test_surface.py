@@ -44,7 +44,9 @@ def test_reprs_are_short(imb_df):
 def test_decisions_table(imb_df):
     t = pf.analyze(imb_df, "y").decisions_table()
     assert isinstance(t, pd.DataFrame)
-    assert list(t.columns) == ["stage", "status", "class", "decision", "why", "key evidence", "do", "experiment", "id"]
+    assert list(t.columns) == ["stage", "status", "class", "decision", "why", "key evidence", "do", "experiment",
+                               "standard", "note", "id"]
+    assert t.set_index("id").loc["d.fit_in_fold", "standard"]
     row = t[t.id == "d.class_weight"].iloc[0]
     assert "Imbalance ratio" in row["key evidence"]
 

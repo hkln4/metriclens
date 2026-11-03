@@ -26,6 +26,7 @@ _STATUS_WORDS = {
     DecisionStatus.VERIFIED: "verified",
     DecisionStatus.SUPPORTED_BY_PROXY: "proxy-supported",
     DecisionStatus.INCONCLUSIVE: "inconclusive",
+    DecisionStatus.NO_PRACTICAL_EFFECT: "no practical effect",
     DecisionStatus.REFUTED: "refuted",
     DecisionStatus.NOT_APPLICABLE: "not applicable",
     DecisionStatus.SKIPPED_BUDGET: "skipped (budget)",
@@ -33,6 +34,7 @@ _STATUS_WORDS = {
     DecisionStatus.CONFIRMED: "confirmed",
     DecisionStatus.DECLINED: "declined",
     DecisionStatus.NEEDS_REVIEW: "needs review",
+    DecisionStatus.REVIEWED: "reviewed",
 }
 
 

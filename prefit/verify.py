@@ -12,6 +12,10 @@ Design constraints (so this never becomes AutoML):
 - "improved" needs direction, significance AND a practical effect threshold
   (Budget.min_effect / min_relative_effect); smaller significant differences
   are "negligible";
+- "no practical effect" needs evidence of absence: an equivalence test (TOST,
+  two one-sided t-tests against ±min_effect with the same corrected standard
+  error, Holm-adjusted). A non-significant difference alone is only
+  "no difference" (inconclusive);
 - the user's estimator, when given, is the only thing that can VERIFY a
   decision; proxy models produce a sensitivity analysis (SUPPORTED_BY_PROXY).
 All of it is development evidence on the dev rows — never the holdout.
@@ -94,11 +98,33 @@ def corrected_ttest(base: np.ndarray, cand: np.ndarray, test_train_ratio: float)
     return mean, (mean - half, mean + half), p
 
 
-def classify_outcome(mean_diff: float, p_adjusted: float | None, min_effect: float, alpha: float) -> str:
+def equivalence_test(base: np.ndarray, cand: np.ndarray, test_train_ratio: float, margin: float) -> float:
+    """TOST p-value that |mean difference| < margin, with the Nadeau & Bengio corrected
+    standard error (the same one `corrected_ttest` uses); small p = equivalent."""
+    from scipy import stats
+
+    if margin <= 0:
+        return 1.0
+    d = cand - base
+    k = len(d)
+    mean = float(d.mean())
+    var = float(d.var(ddof=1)) if k > 1 else 0.0
+    se = float(np.sqrt((1.0 / k + test_train_ratio) * var))
+    if se == 0:
+        return 0.0 if abs(mean) < margin else 1.0
+    lower = stats.t.sf((mean + margin) / se, k - 1)   # H0: diff <= -margin
+    upper = stats.t.cdf((mean - margin) / se, k - 1)  # H0: diff >= +margin
+    return float(max(lower, upper))
+
+
+def classify_outcome(mean_diff: float, p_adjusted: float | None, min_effect: float, alpha: float,
+                     p_equivalence: float | None = None) -> str:
     """Direction + significance + practical size. Without a valid test: not_tested."""
     if p_adjusted is None:
         return "not_tested"
     if p_adjusted >= alpha:
+        if p_equivalence is not None and p_equivalence < alpha:
+            return "no_practical_effect"
         return "no_difference"
     if mean_diff > 0 and mean_diff >= min_effect:
         return "improved"
@@ -207,21 +233,24 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
                        else budget.min_relative_effect * abs(float(base.mean())))
             diffs = cand - base
             if protocol == "time_series":
-                mean, ci, pval = float(diffs.mean()), None, None
+                mean, ci, pval, peq = float(diffs.mean()), None, None, None
             else:
                 mean, ci, pval = corrected_ttest(base, cand, ratio)
+                peq = equivalence_test(base, cand, ratio, float(min_eff))
             raw.append(dict(
                 id=f"exp.{d.id[2:]}.{fam}", decision_id=d.id, family=fam, estimator=type(est).__name__,
                 metric=plan.dev_metric, n_rows=int(len(df)), n_splits=n_spl, n_repeats=n_rep, cv=cv_desc,
                 baseline_scores=[float(x) for x in base], candidate_scores=[float(x) for x in cand],
-                mean_diff=mean, ci=ci, p_value=pval, min_effect=float(min_eff),
+                mean_diff=mean, ci=ci, p_value=pval, p_equivalence=peq, min_effect=float(min_eff),
                 folds_improved=int((diffs > 0).sum()), protocol=protocol, method=method,
                 seconds=round(time.perf_counter() - ts, 2)))
     tested = [r for r in raw if r["p_value"] is not None]
     for r, a in zip(tested, holm([float(r["p_value"]) for r in tested]) if tested else []):
         r["p_adjusted"] = a
+    for r, a in zip(tested, holm([float(r["p_equivalence"]) for r in tested]) if tested else []):
+        r["p_equivalence"] = a
     experiments = [Experiment(**r, outcome=classify_outcome(r["mean_diff"], r.get("p_adjusted"), r["min_effect"],
-                                                            budget.alpha)) for r in raw]
+                                                            budget.alpha, r.get("p_equivalence"))) for r in raw]
     baseline["seconds"] = round(time.perf_counter() - t0, 2)
     return experiments, baseline, notes
 
@@ -234,11 +263,20 @@ def status_from_experiments(d: Decision, exps: list[Experiment], user: bool) -> 
     if "negligible" in outcomes.values() and "improved" not in outcomes.values() and "worse" not in outcomes.values():
         return (DecisionStatus.INCONCLUSIVE,
                 "The difference is statistically detectable but below the practical threshold (Budget.min_effect).")
+    equivalent = ("Equivalent within the practical threshold (TOST, Holm-adjusted): the change makes no practical "
+                  "difference")
     if user:
         o = outcomes.get("user", "")
+        if o == "no_practical_effect":
+            return DecisionStatus.NO_PRACTICAL_EFFECT, equivalent + " for your model."
+        if o == "no_difference":
+            return (DecisionStatus.INCONCLUSIVE, "Neither a difference nor equivalence could be shown: the folds "
+                    "are too noisy for this threshold.")
         return ({"improved": DecisionStatus.VERIFIED, "worse": DecisionStatus.REFUTED}
                 .get(o, DecisionStatus.INCONCLUSIVE), "")
     vals = set(outcomes.values())
+    if vals == {"no_practical_effect"}:
+        return DecisionStatus.NO_PRACTICAL_EFFECT, equivalent + " for every proxy model tested."
     if "improved" in vals and "worse" in vals:
         return DecisionStatus.INCONCLUSIVE, "Model-family dependent: helps one proxy, hurts the other."
     if "improved" in vals:

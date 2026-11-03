@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from .common import experiment_summary, key_evidence
+from .common import experiment_summary, key_evidence, task_dependence_note
 
 
 def decisions_table(report: Any) -> pd.DataFrame:
@@ -17,7 +17,9 @@ def decisions_table(report: Any) -> pd.DataFrame:
             rows.append({
                 "stage": st.title, "status": d.status.value, "class": d.cls.value, "decision": d.title,
                 "why": d.why_short, "key evidence": key_evidence(report, d), "do": d.do_short,
-                "experiment": experiment_summary(report, d), "id": d.id,
+                "experiment": experiment_summary(report, d), "standard": d.standard,
+                "note": " ".join(x for x in (d.review_note, d.note, task_dependence_note(report, d)) if x),
+                "id": d.id,
             })
     return pd.DataFrame(rows, columns=["stage", "status", "class", "decision", "why", "key evidence", "do",
-                                       "experiment", "id"])
+                                       "experiment", "standard", "note", "id"])

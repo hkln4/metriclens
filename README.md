@@ -89,12 +89,14 @@ report.target; report.task
 
 # flow (each returns a new revision; the old report is unchanged)
 report.answer({...}); report.verify(df); report.interpret(llm)
+report.resolve("d.duplicate_rows", "re-entered records; kept")   # close a review item with a note
+report.change_task(df, "regression")     # re-analyze as another task, keeping what still applies
 report.register_external_holdout(test_df, dev_df=dev_df)
 report.export(estimator); report.holdout(df); pf.review(...)
 
 # automation
 report.decisions; report.decision(id); report.questions; report.experiments
-report.metric_plan; report.baseline; report.to_json(); report.llm_payload()
+report.metric_plan; report.baseline; report.cv_estimate(); report.to_json(); report.llm_payload()
 
 # internals: the traceability chain and reproducibility record
 report.details.findings / .finding(id) / .evidence / .profile / .figures
@@ -103,7 +105,23 @@ report.details.manifest / .context / .limitations / .rule_track_record / .llm
 
 `report.decisions_table()` is the best place to start in a notebook: one row per
 decision with its status, a one-line why (with the decisive number), what to do,
-and any experiment result.
+any experiment result, and whether it is *standard practice* (fit preprocessing
+in folds, a plain CV, the holdout rule). Standard-practice decisions appear on
+every dataset, so the text and HTML reports group them apart from the findings
+specific to your data.
+
+**Review items can be closed.** `report.resolve(decision_id, note)` records what
+you decided about a review item (status `reviewed`). Nothing in the data or the
+recipe changes; the note is shown in the report, in `export().describe()` and in
+`pf.review`, and the item no longer counts as an open assumption.
+
+**The task can change without starting over.** While the task is only inferred,
+findings and decisions that exist only under it (class imbalance, class weights,
+the metric options) are marked *task-dependent* in the report and in the LLM
+payload. `report.change_task(df, "regression")` re-runs the analysis on the
+same (fingerprint-checked) frame and carries over the answers that still apply,
+review notes, the registered external holdout and the options; experiments are
+dropped because they belonged to the old task.
 
 **Reports are immutable.** Every model is frozen, lists are tuples and dicts are
 read-only, all the way down. `answer`, `verify`, `interpret` and
@@ -184,7 +202,11 @@ An experiment counts as **improved** only with the right direction, a
 significant Holm-adjusted p-value, *and* a mean difference of at least the
 practical threshold (`Budget(min_relative_effect=0.01)` = 1% of the baseline
 score, or an absolute `min_effect`). Significant but smaller differences are
-**negligible**. Per-fold differences are in the report.
+**negligible**. Absence of an effect needs its own evidence: an equivalence test
+(TOST against ±the practical threshold, same corrected standard error, Holm)
+gives **no practical effect**; without it a non-significant result stays
+**inconclusive** (the folds were too noisy to tell). Changes are shown in natural
+units (errors as errors, "lower = better"); per-fold changes are in the report.
 
 - With `estimator=`, an improvement makes the decision **verified** (and
   exportable); a practical-size loss makes it **refuted**.
@@ -250,7 +272,10 @@ and must answer in a fixed JSON schema. It can summarize, prioritize existing
 decisions, suggest answers to open questions (shown as awaiting your
 confirmation, never applied) and raise *semantic* flags on column names, which
 are marked manual-review. Claims that cite unknown evidence or decision ids are
-dropped and counted. With `share_column_names=False` columns are aliased and
+dropped; `details.llm.dropped` says what was dropped and why, and
+`details.llm.raw_response` keeps the reply exactly as received. While the task is
+unconfirmed, the payload marks task-dependent items and the prompt tells the
+model not to build advice on them. With `share_column_names=False` columns are aliased and
 free-text messages are withheld; the report lists exactly what was sent. The
 free-text `context=` never changes a decision by itself. Without an LLM the
 report is complete.
@@ -262,11 +287,17 @@ the live APIs in this repository's tests.
 
 ## After training
 
-`pf.review(y_true, y_pred, report, y_score=..., segments=...)` checks the
+`pf.review(y_true, y_pred, report, y_score=..., segments=..., X=test_X)` checks the
 roadmap's hypotheses against real errors, each against an explicit reference
 (e.g. "tails dominate" vs. what Gaussian errors would give), adds residual /
 confusion / precision–recall / segment analysis, and lists every assumption
-that was never verified.
+that was never verified (and the review items you closed, with your notes).
+
+Every headline metric carries a seeded 95% bootstrap interval; with `X=` exact
+duplicate rows in the test data are resampled together. After `verify`, the
+review also checks that the development CV estimate (`report.cv_estimate()`)
+lies inside the test interval — one test score is noisy, and the interval says
+how noisy before anyone reads a story into the gap.
 
 ---
 
@@ -308,6 +339,9 @@ about real-world accuracy, nor about how often a decision improves a model.
 - Duplicates are matched exactly. Near-duplicates (a rounded value, one
   differing column, an id column that makes copies distinct) are not detected
   and can still straddle a split; pass `groups=` when rows share an entity.
+  The duplicate review item reports whether copies sit close together in row
+  order (a permutation test); that hints at re-entered records but cannot prove
+  it, and it says nothing once a file has been shuffled.
 - With `time_col`, the holdout is the latest period and CV is
   `TimeSeriesSplit`; exact duplicates are *not* kept together there (time order
   wins), so a copy can sit on both sides. The duplicate review item says so.

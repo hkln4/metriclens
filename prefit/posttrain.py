@@ -1,11 +1,15 @@
 """Second stage: after training, check the roadmap's assumptions against the
 model's actual errors.
 
-Deterministic, numpy-only, and it sees only y_true / y_pred (/ y_score and
-optional segment labels). Judgements use explicit reference points rather than
+Deterministic, numpy-only, and it sees only y_true / y_pred (/ y_score,
+optional segment labels, and optionally the test features X, used only to find
+exact duplicate rows). Judgements use explicit reference points rather than
 bare thresholds — e.g. "tails dominate" is measured against what Gaussian
 errors would give — and the reference is shown with every check. Only scores
-computed on the untouched holdout are an unbiased estimate; the review says so.
+computed on the untouched holdout are an unbiased estimate; the review says so,
+and every headline metric carries a seeded 95% bootstrap interval (resampling
+sets of identical rows together when X is given), so one test score is not
+read more precisely than it is.
 """
 
 from __future__ import annotations
@@ -48,7 +52,9 @@ class ReviewReport(BaseModel):
     thresholds: list[dict[str, float]] = Field(default_factory=list)
     segments: list[dict[str, Any]] = Field(default_factory=list)
     checks: list[ReviewCheck] = Field(default_factory=list)
+    intervals: dict[str, tuple[float, float]] = Field(default_factory=dict)
     unverified: list[dict[str, str]] = Field(default_factory=list)
+    reviewed: list[dict[str, str]] = Field(default_factory=list)
     figures: list[FigureSpec] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -57,7 +63,8 @@ class ReviewReport(BaseModel):
         lines = ["REVIEW — did the roadmap hold?", f"Task: {self.task} · n={self.n}", ""]
         if self.metrics:
             lines.append("Measured:")
-            lines += [f"- {k}: {v:.4g}" for k, v in self.metrics.items()]
+            lines += [f"- {k}: {v:.4g}" + (f"  [95% CI {self.intervals[k][0]:.4g}, {self.intervals[k][1]:.4g}]"
+                                           if k in self.intervals else "") for k, v in self.metrics.items()]
         if self.baseline:
             lines += [f"- baseline {k}: {v:.4g}" for k, v in self.baseline.items()]
         lines += ["", "Checks:"]
@@ -74,6 +81,9 @@ class ReviewReport(BaseModel):
         if self.unverified:
             lines += ["", "Roadmap assumptions that were never verified:"]
             lines += [f"- [{u['status']}] {u['title']} ({u['id']})" for u in self.unverified]
+        if self.reviewed:
+            lines += ["", "Review items you closed:"]
+            lines += [f"- {u['title']} ({u['id']}): {u['note']}" for u in self.reviewed]
         if self.notes:
             lines += [""] + [f"note: {n}" for n in self.notes]
         return "\n".join(lines).rstrip() + "\n"
@@ -90,8 +100,10 @@ class ReviewReport(BaseModel):
         rows = [[_badge(*verdict[c.held]), esc(c.hypothesis), esc(c.comment), esc(c.reference)] for c in self.checks]
         parts = ['<section id="review"><h2>Review · after training</h2>',
                  f'<p class="sub">{esc(self.task)} · n={self.n}. ' + " ".join(esc(n) for n in self.notes) + "</p>",
-                 table(["metric", "value"], [[k, v] for k, v in {**self.metrics, **{f"baseline {k}": v for k, v in
-                                                                                   self.baseline.items()}}.items()]),
+                 table(["metric", "value", "95% interval"],
+                       [[k, v, (f"[{self.intervals[k][0]:.4g}, {self.intervals[k][1]:.4g}]" if k in self.intervals
+                                else "")] for k, v in self.metrics.items()]
+                       + [[f"baseline {k}", v, ""] for k, v in self.baseline.items()]),
                  "<h3>Did the roadmap's hypotheses hold?</h3>",
                  table(["verdict", "hypothesis", "result", "reference"], rows, raw=True)]
         if self.per_class:
@@ -106,6 +118,10 @@ class ReviewReport(BaseModel):
             parts.append("<h3>Assumptions that were never verified</h3><ul>" + "".join(
                 f'<li><a href="#{esc(u["id"])}">{esc(u["title"])}</a> — {esc(u["status"])}</li>'
                 for u in self.unverified) + "</ul>")
+        if self.reviewed:
+            parts.append("<h3>Review items you closed</h3><ul>" + "".join(
+                f'<li><a href="#{esc(u["id"])}">{esc(u["title"])}</a> — {esc(u["note"])}</li>'
+                for u in self.reviewed) + "</ul>")
         parts += [_figure(f) for f in self.figures]
         parts.append("</section>")
         return "".join(parts), {f.id: f.plot for f in self.figures}
@@ -140,6 +156,75 @@ def _unverified(report: Any) -> list[dict[str, str]]:
     if report.metric_plan.dev_metric_provisional and not any(u["id"] == "d.metric" for u in out):
         out.append({"id": "d.metric", "title": "Metric priority (provisional)", "status": "awaiting_user"})
     return out
+
+
+def _reviewed(report: Any) -> list[dict[str, str]]:
+    if report is None:
+        return []
+    return [{"id": d.id, "title": d.title, "note": d.review_note} for d in report.decisions
+            if d.status is DecisionStatus.REVIEWED]
+
+
+# review metric key <- the sklearn scorer behind report.cv_estimate()
+_CV_KEY = {"neg_mean_absolute_error": "MAE", "neg_root_mean_squared_error": "RMSE", "r2": "R2",
+           "accuracy": "accuracy", "balanced_accuracy": "balanced_accuracy", "f1_macro": "macro_f1"}
+
+
+def _weighted_metrics(task: str, yt: np.ndarray, yp: np.ndarray, w: np.ndarray) -> dict[str, float]:
+    tot = float(w.sum())
+    if task == "regression":
+        resid = yp - yt
+        mean_y = (w * yt).sum() / tot
+        ss_tot = (w * (yt - mean_y) ** 2).sum()
+        sse = (w * resid ** 2).sum()
+        return {"MAE": float((w * np.abs(resid)).sum() / tot), "RMSE": float(np.sqrt(sse / tot)),
+                "R2": float(1 - sse / ss_tot) if ss_tot > 0 else float("nan")}
+    labels, inv = np.unique(np.concatenate([yt.astype(str), yp.astype(str)]), return_inverse=True)
+    ti, pi = inv[: len(yt)], inv[len(yt):]
+    k = len(labels)
+    hit = ti == pi
+    support = np.bincount(ti, w, k)
+    correct = np.bincount(ti[hit], w[hit], k)
+    predicted = np.bincount(pi, w, k)
+    present = support > 0
+    rec = np.divide(correct, support, out=np.zeros(k), where=present)
+    prec = np.divide(correct, predicted, out=np.zeros(k), where=predicted > 0)
+    f1 = np.divide(2 * prec * rec, prec + rec, out=np.zeros(k), where=(prec + rec) > 0)
+    return {"accuracy": float(correct.sum() / tot), "balanced_accuracy": float(rec[present].mean()),
+            "macro_f1": float(f1[present].mean())}
+
+
+def _intervals(task: str, yt: np.ndarray, yp: np.ndarray, units: np.ndarray, n_boot: int,
+               seed: int) -> dict[str, tuple[float, float]]:
+    if n_boot <= 0 or len(yt) < 2:
+        return {}
+    codes = np.asarray(pd.factorize(units)[0])
+    n_units = int(np.max(codes)) + 1
+    rng = np.random.default_rng(seed)
+    draws: dict[str, list[float]] = {}
+    for _ in range(n_boot):
+        w = np.bincount(rng.integers(0, n_units, n_units), minlength=n_units)[codes].astype(float)
+        for key, v in _weighted_metrics(task, yt, yp, w).items():
+            draws.setdefault(key, []).append(v)
+    return {key: (r(float(np.nanpercentile(v, 2.5))), r(float(np.nanpercentile(v, 97.5)))) for key, v in draws.items()}
+
+
+def _cv_check(rep: ReviewReport, report: Any) -> None:
+    est = report.cv_estimate() if report is not None else None
+    key = _CV_KEY.get(est["metric"]) if est else None
+    if not est or key not in rep.intervals or est["mean"] is None:
+        return
+    lo, hi = rep.intervals[key]
+    held = bool(lo <= est["mean"] <= hi)
+    rep.checks.append(ReviewCheck(
+        hypothesis="The development CV estimate describes the score on the untouched test data.", held=held,
+        evidence={"cv_estimate": r(est["mean"]), "cv_std": r(est["std"]), "test": rep.metrics.get(key),
+                  "test_interval": [lo, hi]},
+        reference=f"95% bootstrap interval of the test {key}; CV: {est['cv']} ({est['family']})",
+        comment=(f"Held: CV {key} {est['mean']:.4g} lies inside the test interval [{lo:.4g}, {hi:.4g}]; the gap to "
+                 f"the test score ({rep.metrics.get(key, float('nan')):.4g}) is within test-set noise." if held else
+                 f"Did not hold: CV {key} {est['mean']:.4g} lies outside the test interval [{lo:.4g}, {hi:.4g}]. "
+                 "Look for a difference between the development and test data, or leakage in the CV.")))
 
 
 def _segments(seg: Any, n: int, err: np.ndarray, metric: str, higher_worse: bool) -> list[dict[str, Any]]:
@@ -352,20 +437,31 @@ def _review_classification(yt: np.ndarray, yp: np.ndarray, fids: set[str], y_sco
 
 
 def review(y_true: Any, y_pred: Any, report: Any = None, *, y_score: Any = None, segments: Any = None,
-           task: Any = None) -> ReviewReport:
+           task: Any = None, X: Any = None, n_bootstrap: int = 1000, seed: int = 0) -> ReviewReport:
     """Check the report's assumptions against actual predictions.
 
     y_true, y_pred : truth and predictions (labels or values), same length.
-    report : the Report from `analyze`; supplies the task, findings and the
-        list of assumptions that were never verified.
+    report : the Report from `analyze`; supplies the task, findings, the CV
+        estimate from `verify`, and the assumptions that were never verified.
     y_score : optional scores/probabilities (binary: P(positive) or an (n, 2) array).
     segments : optional Series/DataFrame of segment labels aligned to y_true.
+    X : optional test features aligned to y_true. Only used to find exact
+        duplicate rows, which the bootstrap then resamples together.
+    n_bootstrap, seed : resamples and seed for the 95% intervals (0 turns them off).
     """
     yt, yp = _to_1d(y_true), _to_1d(y_pred)
     if yt.shape[0] != yp.shape[0]:
         raise ValueError("y_true and y_pred must have the same length.")
     if yt.size == 0:
         raise ValueError("y_true / y_pred are empty.")
+    if X is not None:
+        from .splitters import duplicate_units
+
+        if len(X) != yt.shape[0]:
+            raise ValueError(f"X has {len(X)} rows; y_true has {yt.shape[0]}.")
+        units = duplicate_units(X, yt)
+    else:
+        units = np.arange(yt.shape[0])
     if task is not None:
         t = getattr(task, "value", task)
     elif report is not None:
@@ -380,6 +476,7 @@ def review(y_true: Any, y_pred: Any, report: Any = None, *, y_score: Any = None,
         if seg is not None and not keep.all():
             seg = (seg if isinstance(seg, pd.DataFrame) else pd.Series(_to_1d(seg))).reset_index(drop=True)[keep]
         rep = _review_regression(yt_f[keep], yp_f[keep], fids, seg)
+        rep.intervals = _intervals("regression", yt_f[keep], yp_f[keep], units[keep], n_bootstrap, seed)
     elif t == "classification":
         pos = None
         if report is not None and report.metric_plan.positive_label is not None:
@@ -387,8 +484,17 @@ def review(y_true: Any, y_pred: Any, report: Any = None, *, y_score: Any = None,
 
             pos = positive_label(report.details.profile, report.metric_plan.positive_label)
         rep = _review_classification(yt, yp, fids, y_score, pos, segments)
+        rep.intervals = _intervals("classification", yt, yp, units, n_bootstrap, seed)
     else:
         raise ValueError(f"review() supports 'regression' and 'classification'; got {t!r}.")
+    rep.intervals = {k: v for k, v in rep.intervals.items() if k in rep.metrics}
+    _cv_check(rep, report)
     rep.unverified = _unverified(report)
+    rep.reviewed = _reviewed(report)
+    if rep.intervals:
+        dup = int(len(units) - len(np.unique(units)))
+        rep.notes.insert(0, f"Intervals: seeded 95% percentile bootstrap, {n_bootstrap} resamples"
+                         + (f", exact duplicates resampled together ({dup} extra copies in the test data)."
+                            if X is not None else " (pass X= to resample exact duplicates together)."))
     rep.notes.insert(0, "Only predictions on the untouched holdout give an unbiased estimate.")
     return rep

@@ -41,9 +41,15 @@ def build_payload(report: Any, cfg: LLMConfig) -> tuple[dict[str, Any], dict[str
             return {col_alias.get(k, "…"): val(x) for k, x in v.items()}
         return "(text withheld)"
 
+    unconfirmed = bool(p.task_inferred) and report.details.context.answers.get("q.task") is None
+
+    def dep(x: Any) -> dict[str, Any]:
+        return {"task_dependent": True} if unconfirmed and x.task_dependent else {}
+
     payload: dict[str, Any] = {
         "task": report.task.value,
         "task_inferred": p.task_inferred,
+        "task_confirmed": not unconfirmed,
         "n_rows": p.dataset.n_rows,
         "n_features": p.dataset.n_features,
         "target": col_alias[report.target],
@@ -55,9 +61,9 @@ def build_payload(report: Any, cfg: LLMConfig) -> tuple[dict[str, Any], dict[str
         "findings": [{"id": oid(f.id, "F"), "rule": f.rule_id, "severity": f.severity.value,
                       "near_threshold": f.trigger.value == "uncertain",
                       "evidence_ids": [oid(x, "E") for x in f.evidence_ids]}
-                     | ({"message": f.message} if share else {}) for f in report.details.findings],
+                     | ({"message": f.message} if share else {}) | dep(f) for f in report.details.findings],
         "decisions": [{"id": oid(d.id, "D"), "rule": d.rule_id, "class": d.cls.value, "status": d.status.value}
-                      | ({"title": d.title, "action": d.action} if share else {}) for d in report.decisions],
+                      | ({"title": d.title, "action": d.action} if share else {}) | dep(d) for d in report.decisions],
         "questions": [{"id": oid(q.id, "Q"), "options": [o.value for o in q.options]}
                       | ({"text": q.text} if share else {}) for q in report.questions if q.answer is None],
     }

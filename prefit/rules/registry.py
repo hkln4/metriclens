@@ -109,7 +109,8 @@ class Emitter:
                  rationale: str, *, status: DecisionStatus | None = None, risk: str = "",
                  verify_hint: str = "", finding_ids: list[str] | tuple[str, ...] = (), evidence_ids: list[str] | tuple[str, ...] = (),
                  step: Step | None = None, question_id: str | None = None,
-                 trig: Trigger | None = None, note: str = "", why: str = "", do: str = "") -> Decision:
+                 trig: Trigger | None = None, note: str = "", why: str = "", do: str = "",
+                 standard: bool = False) -> Decision:
         assert self.rule is not None
         if status is None:
             status = {
@@ -124,7 +125,7 @@ class Emitter:
                      why_short=why or first_sentence(rationale), do_short=do or first_sentence(action),
                      rule_id=self.rule.id, finding_ids=list(finding_ids),
                      evidence_ids=list(evidence_ids), step=step, question_id=question_id,
-                     trigger=trig, note=note)
+                     trigger=trig, note=note, standard=standard)
         self.decisions.append(d)
         return d
 

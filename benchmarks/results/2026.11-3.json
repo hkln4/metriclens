@@ -1,6 +1,6 @@
 {
   "manifest_version": "2026.11-3",
-  "prefit_version": "0.2.0",
+  "prefit_version": "0.3.0",
   "python": "3.13.1",
   "protocol": "Each case runs pf.analyze with default options (plus the case's kwargs) and seed 0. A check passes when the rule's finding matches the expectation: fired / none / uncertain (near threshold). Split checks (holdout_split, cv_split) count exact row hashes found on both sides of the internal holdout and of every exported CV fold; they pass at 0.",
   "cases": [
@@ -619,7 +619,7 @@
   "verification": [
     {
       "dataset": "sklearn:load_breast_cancer",
-      "seconds": 8.1,
+      "seconds": 8.6,
       "dev_metric": "accuracy",
       "decisions": {
         "d.power_transform": "inconclusive"
@@ -630,8 +630,8 @@
           "family": "linear_proxy",
           "mean_diff": 0.0011592402835998532,
           "ci": [
-            -0.019972310072381202,
-            0.02229079063958091
+            -0.01997231007238984,
+            0.02229079063958955
           ],
           "p_holm": 1.0,
           "outcome": "no_difference"
@@ -639,26 +639,26 @@
         {
           "decision": "d.power_transform",
           "family": "tree_proxy",
-          "mean_diff": -0.0005847953216374288,
+          "mean_diff": 0.0011747658231123484,
           "ci": [
-            -0.0033183984378159174,
-            0.0021488077945410597
+            -0.002567032684193119,
+            0.004916564330417816
           ],
           "p_holm": 1.0,
-          "outcome": "no_difference"
+          "outcome": "no_practical_effect"
         }
       ]
     },
     {
       "dataset": "sklearn:load_diabetes",
-      "seconds": 2.5,
+      "seconds": 2.3,
       "dev_metric": "neg_mean_absolute_error",
       "decisions": {},
       "experiments": []
     },
     {
       "dataset": "sklearn:load_wine",
-      "seconds": 2.8,
+      "seconds": 2.4,
       "dev_metric": "accuracy",
       "decisions": {},
       "experiments": []

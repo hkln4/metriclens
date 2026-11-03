@@ -31,6 +31,8 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    │                    deeply immutable (frozen.py)
    │
    ├─ Report.answer(...)                  re-runs the rules with new answers (no data needed)
+   ├─ Report.resolve(id, note)            closes a review item with a note (status reviewed)
+   ├─ Report.change_task(df, task)        fingerprint check, re-analyze, carry answers/notes/holdout
    ├─ Report.verify(df)                   fingerprint check, then verify.py on dev rows
    ├─ Report.holdout(df)                  fingerprint check, re-derives the internal holdout
    ├─ Report.register_external_holdout()  metadata + exact-overlap count, never profiled
@@ -38,7 +40,8 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    │                                      (splitters.py: DuplicateAwareKFold when the dev rows have exact duplicates)
    ├─ Report.interpret()  llm/: optional, schema-constrained interpretation
    ├─ Report.to_html()    render/: single-file report
-   └─ pf.review(...)      posttrain.py: assumptions vs. actual errors
+   └─ pf.review(...)      posttrain.py: assumptions vs. actual errors, bootstrap intervals,
+                          CV estimate vs. test interval
 ```
 
 ## Contracts
@@ -73,7 +76,9 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    change at a time against a fixed base, identical folds, hard budget. The
    test follows the protocol: corrected repeated k-fold t-test (repeated or
    grouped k-fold), no p-value for time-ordered folds. "Improved" needs
-   direction, Holm-adjusted significance and a practical effect threshold.
+   direction, Holm-adjusted significance and a practical effect threshold;
+   "no practical effect" needs a passed equivalence test (TOST), so absence of
+   evidence is never reported as evidence of absence.
    Proxy models give sensitivity analysis; only the user's estimator verifies.
 5. **Split precedence is explicit.** time_col > groups > stratification;
    time_col disables stratification (stated in the decision); groups and
