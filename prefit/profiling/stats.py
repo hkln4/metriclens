@@ -104,6 +104,37 @@ def categorical_stats(s: pd.Series, show_labels: bool, top_k: int = 15) -> dict[
     return out
 
 
+def copy_adjacency(units: np.ndarray, seed: int, n_permutations: int = 199) -> dict[str, Any]:
+    """Are exact copies closer together in row order than chance?
+
+    `units` gives one id per row (identical rows share it). The statistic is the
+    median distance, in rows, from each extra copy to its first occurrence; the
+    null distribution comes from random row orders (seeded). Copies a few rows
+    apart suggest the same record entered more than once."""
+    units = np.asarray(units)
+    n = len(units)
+    counts = np.bincount(units)
+    rows = np.flatnonzero(counts[units] > 1)
+    if len(rows) == 0:
+        return {}
+    order = rows[np.argsort(units[rows], kind="stable")]
+    starts = np.flatnonzero(np.r_[True, np.diff(units[order]) != 0])
+    size = np.diff(np.r_[starts, len(order)])
+
+    def median_gap(pos: np.ndarray) -> float:
+        p = pos[order]
+        first = np.minimum.reduceat(p, starts)
+        gaps = p - np.repeat(first, size)
+        return float(np.median(gaps[gaps > 0]))
+
+    observed = median_gap(np.arange(n))
+    rng = np.random.default_rng(seed)
+    null = np.array([median_gap(rng.permutation(n)) for _ in range(n_permutations)])
+    return {"median_gap": observed, "random_median_gap": float(np.median(null)),
+            "p_value": r(float((1 + (null <= observed).sum()) / (1 + n_permutations)), 4),
+            "n_permutations": n_permutations}
+
+
 def bootstrap_ci(
     v: np.ndarray, fn: Callable[[np.ndarray], float], n_boot: int, max_rows: int,
     seed: int, alpha: float = 0.05,

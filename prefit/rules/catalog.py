@@ -26,7 +26,7 @@ BOOT = "bootstrap 95% percentile interval (seeded)"
 # Setup & split
 # --------------------------------------------------------------------------- #
 
-@rule("task_confirmation", "1", description="Ask the user to confirm an inferred task.")
+@rule("task_confirmation", "2", description="Ask the user to confirm an inferred task.")
 def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     if not p.task_inferred:
         return
@@ -37,17 +37,24 @@ def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     sev = Severity.WARN if te.get("ambiguous") else Severity.INFO
     f = out.finding("task_inferred", sev, Trigger.FIRED,
                     f"Task inferred as {p.task.value} ({te.get('reason')}).", [e], [p.target.name])
-    contextual(out, ctx, qid="task", question=f"Is this a {p.task.value} task?",
-               options=[(p.task.value, f"Yes, {p.task.value}", "keeps the current analysis"),
-                        (other.value, f"No, {other.value}", f"re-run pf.analyze(..., task='{other.value}')")],
+    hint = " Ordered scores are usually regression; the data cannot tell." if p.task is CLS else ""
+    labels = ({CLS: "Yes: unordered labels (species, digits, categories)",
+               REG: "No: an ordered score or rating (off by one beats off by three)"} if p.task is CLS else
+              {CLS: "No, classification", REG: "Yes, regression"})
+    contextual(out, ctx, qid="task", question=f"Is this a {p.task.value} task?{hint}",
+               options=[(p.task.value, labels[p.task], "keeps the current analysis"),
+                        (other.value, labels[other],
+                         f"report.change_task(df, '{other.value}') re-runs the analysis and keeps your answers, "
+                         "review notes and registered holdout")],
                confirm=p.task.value, decision_id="task", title=f"Treat the task as {p.task.value}",
                stage="split", action=f"Analyze and evaluate as a {p.task.value} problem.",
                rationale=f"Inferred from the target: {te.get('reason')}.",
-               risk="A wrong task changes every metric and split recommendation.",
+               risk="A wrong task changes every metric and split recommendation. Until you answer, findings "
+                    "and decisions marked as task-dependent assume the inferred task.",
                finding_ids=[f], evidence_ids=[e])
 
 
-@rule("validation_split", "3", thresholds={"small_data_rows": 1000},
+@rule("validation_split", "4", thresholds={"small_data_rows": 1000},
       description="Choose the cross-validation splitter from task, groups, time and exact duplicates.")
 def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     n = p.dataset.n_rows
@@ -88,11 +95,10 @@ def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     dup_aware = bool(dup) and not ctx.time_col and not ctx.groups
     title = f"Cross-validate with {name}"
     if dup_aware:
-        ev.append(out.ev("dataset.duplicates", "Exact duplicate rows", dup,
-                         f"exact full-row duplicates incl. target ({p.dataset.duplicate_fraction:.2%})"))
+        ev.append(_dup_evidence(out, p))
         title += " (exact duplicates kept in one fold)"
-        why += (f"; the {dup} exact duplicate rows are kept in one fold (rows hashed on features + target), "
-                "so a copy never validates its twin")
+        why += (f"; exact duplicates ({dup} extra copies) are kept in one fold (rows hashed on features + "
+                "target), so a copy never validates its twin")
         spec += ", keeping exact duplicates in one fold (prefit.DuplicateAwareKFold)"
     if ctx.time_col or ctx.groups or name.startswith("Repeated"):
         verif = f"Verification experiments and baselines use the same splitter ({spec})."
@@ -108,7 +114,7 @@ def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                        "same customer, later in time, near-duplicates) can still leak across folds."
                        if not (ctx.groups or ctx.time_col) else ""),
                  evidence_ids=ev, step=Step(kind="cv", params={"name": name, **params}),
-                 do=f"Use {spec}.", why=why)
+                 do=f"Use {spec}.", why=why, standard=not (dup_aware or ctx.groups or ctx.time_col))
     split_cols = [c for c in (ctx.groups if ctx.groups != "<array>" else None, ctx.time_col) if c]
     if split_cols and not ctx.split_columns_as_features:
         e = out.ev("columns.split", "Split columns", split_cols, "groups= / time_col= arguments", columns=split_cols)
@@ -134,7 +140,7 @@ def validation_split(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                      finding_ids=[f], evidence_ids=[e])
 
 
-@rule("holdout_policy", "2", description="Keep the holdout out of every decision.")
+@rule("holdout_policy", "3", description="Keep the holdout out of every decision.")
 def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     h = p.holdout
     ext = ctx.external_holdout
@@ -146,7 +152,8 @@ def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                      "Every prefit decision was made on the dev rows only, so the holdout is an "
                      "unbiased check of the final model.",
                      risk="Re-using the holdout to choose between models turns it into a second dev set.",
-                     evidence_ids=[e], do="Score the final model on report.holdout(df) once, at the end.")
+                     evidence_ids=[e], do="Score the final model on report.holdout(df) once, at the end.",
+                     standard=True)
     elif ext:
         e = out.ev("holdout", "External holdout (registered)", f"{ext['n_rows']} rows ({ext['name']})",
                    "registered with report.register_external_holdout; metadata only, never profiled")
@@ -154,7 +161,8 @@ def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                      "final", f"Score the final model on the {ext['name']} once.",
                      "Prefit did not reserve an internal holdout; the analysis ran on the frame you passed, "
                      f"and the registered {ext['name']} ({ext['n_rows']} rows) was kept out of it.",
-                     risk="Re-using it to choose between models turns it into a second dev set.", evidence_ids=[e])
+                     risk="Re-using it to choose between models turns it into a second dev set.", evidence_ids=[e],
+                     standard=True)
     else:
         e = out.ev("holdout", "Internal holdout", "none", h.get("reason", ""))
         out.decision("holdout", "Prefit did not reserve an internal holdout", DecisionClass.PROCEDURAL,
@@ -165,7 +173,7 @@ def holdout_policy(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                      f"Prefit did not reserve an internal holdout ({h.get('reason', '')}). If you split off a test "
                      "set before calling analyze, register it so the report records it.",
                      risk="Scores from the same CV used to make decisions are optimistic.", evidence_ids=[e],
-                     do="Register your test set, or use nested CV for the final estimate.")
+                     do="Register your test set, or use nested CV for the final estimate.", standard=True)
 
 
 @rule("external_holdout_overlap", "1", thresholds={"overlap_rows": 1})
@@ -272,16 +280,42 @@ def infinite_values(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  do="Trace the source of the infinities and fix them upstream.")
 
 
-@rule("duplicate_rows", "2", thresholds={"warn_fraction": 0.01})
+def _dup_evidence(out: Emitter, p: DataProfile) -> str:
+    d = p.dataset
+    return out.ev("dataset.duplicates", "Exact duplicate rows (extra copies)", d.duplicate_rows,
+                  f"rows identical to an earlier row, all columns incl. target ({d.duplicate_fraction:.2%} of rows)")
+
+
+@rule("duplicate_rows", "3", thresholds={"warn_fraction": 0.01, "adjacency_p": 0.05})
 def duplicate_rows(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     d = p.dataset
     if not d.duplicate_rows:
         return
-    e = out.ev("dataset.duplicates", "Exact duplicate rows", d.duplicate_rows,
-               f"exact full-row duplicates incl. target ({d.duplicate_fraction:.2%})")
+    e = _dup_evidence(out, p)
+    evs = [e]
+    if d.duplicate_groups:
+        evs.append(out.ev("dataset.duplicate_groups", "Rows in duplicate groups",
+                          f"{d.duplicate_rows_in_groups} rows in {d.duplicate_groups} groups",
+                          "every row that has an identical twin, and the number of distinct duplicated rows"))
+    adj = dict(d.duplicate_adjacency or {})
+    order_hint = ""
+    if adj:
+        evs.append(out.ev("dataset.duplicate_adjacency", "Row distance between copies", adj["median_gap"],
+                          f"median rows from a copy to its first occurrence; random order gives "
+                          f"{adj['random_median_gap']:g} (permutation p = {adj['p_value']:.3f}, "
+                          f"{adj['n_permutations']} permutations)"))
+        if adj["p_value"] < 0.05:
+            order_hint = (f" The copies sit close together in the file (median {adj['median_gap']:g} rows apart, "
+                          f"{adj['random_median_gap']:g} if the order were random; p = {adj['p_value']:.3f}), which "
+                          "points to the same record entered more than once.")
+        else:
+            order_hint = (f" The copies are spread through the file as if at random (median {adj['median_gap']:g} "
+                          f"rows apart, {adj['random_median_gap']:g} expected), so row order gives no hint.")
     sev = Severity.WARN if d.duplicate_fraction >= 0.01 else Severity.INFO
+    groups_txt = (f": {d.duplicate_rows_in_groups} rows in {d.duplicate_groups} groups of identical rows"
+                  if d.duplicate_groups else "")
     f = out.finding("duplicate_rows", sev, Trigger.FIRED,
-                    f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}).", [e])
+                    f"{d.duplicate_rows} extra exact copies ({d.duplicate_fraction:.2%}){groups_txt}.", evs)
     if ctx.groups or ctx.time_col:
         by = "your groups" if ctx.groups else f"time order ('{ctx.time_col}')"
         hint = f" The split follows {by}, not the duplicates, so copies can still land on both sides."
@@ -294,19 +328,20 @@ def duplicate_rows(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                      risk="Near-duplicates (a rounding or one-column difference) are not caught; an id column "
                           "makes copies distinct, so pass groups= if rows share an entity.",
                      finding_ids=[f], evidence_ids=[e],
-                     why=f"{d.duplicate_rows} exact duplicate rows would otherwise score their own twins.",
+                     why=f"{d.duplicate_rows} extra exact copies would otherwise score their own twins.",
                      do="Keep identical rows together in the holdout and in every CV fold.")
         hint = ""
     out.decision("duplicate_rows", "Decide whether duplicates are the same record or legitimate repeats",
                  DecisionClass.REVIEW, "data_review",
                  "Find out whether duplicates are the same real-world record (collection artefact: drop the extra "
-                 "copies) or legitimate repeats (keep them)." + hint,
+                 "copies) or legitimate repeats (keep them)." + order_hint + hint
+                 + " Record what you decide with report.resolve('d.duplicate_rows', note).",
                  "Splitting keeps exact copies together, but they still weigh twice in training and in every "
                  "score; whether they should depends on where they come from.",
                  risk="Dropping legitimate repeats changes the data distribution; keeping artefacts over-weights "
                       "them. prefit does not decide this for you.",
-                 finding_ids=[f], evidence_ids=[e],
-                 why=f"{d.duplicate_rows} exact duplicate rows ({d.duplicate_fraction:.2%}) weigh twice in training "
+                 finding_ids=[f], evidence_ids=evs,
+                 why=f"{d.duplicate_rows} extra exact copies ({d.duplicate_fraction:.2%}) weigh twice in training "
                      "and scoring.",
                  do="Decide whether they are the same record or legitimate repeats.")
 
@@ -509,7 +544,7 @@ def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
 # Preprocessing
 # --------------------------------------------------------------------------- #
 
-@rule("fit_in_fold", "2")
+@rule("fit_in_fold", "3")
 def fit_in_fold(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     miss = p.dataset.missing_columns
     cat = p.kind_of(ColumnKind.CATEGORICAL)
@@ -532,10 +567,10 @@ def fit_in_fold(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                       "otherwise. Feature scaling is estimator-dependent and is not part of this decision: export "
                       "adds it with scale=True (default) and you can turn it off.",
                  evidence_ids=evs, why="Statistics fit on all rows leak test-fold information into the score.",
-                 do="Keep imputation and encoding inside the exported Pipeline.")
+                 do="Keep imputation and encoding inside the exported Pipeline.", standard=True)
 
 
-@rule("skewed_features", "2", thresholds={"abs_skew": 2.0})
+@rule("skewed_features", "3", thresholds={"abs_skew": 2.0})
 def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     cols, trig_any = [], []
     for c, cp in p.columns.items():
@@ -563,7 +598,10 @@ def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  verify_hint="Compare CV scores with and without the transform for your model family.",
                  finding_ids=[f], evidence_ids=evs, trig=trig,
                  step=Step(kind="power_transform", params={"columns": cols}),
-                 why=f"{counts} feature(s) have |skew| >= 2; whether that matters depends on the model family.",
+                 why=(f"{n_fired} feature(s) have |skew| >= 2 across their whole interval"
+                      + ((f", and {n_near} more " + ("has an interval that straddles 2" if n_near == 1
+                                                      else "have intervals that straddle 2")) if n_near else "")
+                      + "; whether that matters depends on the model family."),
                  do="Test a Yeo-Johnson transform with your estimator (report.verify).")
 
 

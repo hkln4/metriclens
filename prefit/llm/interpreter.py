@@ -31,6 +31,8 @@ Every number was computed by code and is correct. Rules:
 - You may raise semantic flags about COLUMN NAMES only (e.g. a name suggesting the value is recorded after the outcome).
   These are hints that require manual review; never state that leakage was detected.
 - You may suggest an answer to an open question only if user_context clearly supports it; otherwise omit it.
+- If task_confirmed is false, the task is only inferred: items marked "task_dependent": true exist only under that
+  guess. Do not build priorities or advice on them; say that the task must be confirmed first.
 Respond with ONE JSON object and nothing else:
 {"summary": str (<= 120 words),
  "priorities": [{"text": str, "evidence_ids": [str], "decision_ids": [str]}],
@@ -122,20 +124,21 @@ def interpret_report(report: Any, llm: Any) -> Any:
 
     known_ev, known_dec = set(report.details.evidence), {d.id for d in report.decisions}
     known_cols = set(report.details.profile.columns) | {report.target}
-    dropped = 0
+    dropped: list[str] = []
     claims = []
     for c in out.priorities:
         ev = [real(x) for x in c.evidence_ids]
         dec = [real(x) for x in c.decision_ids]
-        if not (ev or dec) or not set(ev) <= known_ev or not set(dec) <= known_dec:
-            dropped += 1
+        unknown = sorted((set(ev) - known_ev) | (set(dec) - known_dec))
+        if not (ev or dec) or unknown:
+            dropped.append(f"priority {c.text[:60]!r}: " + (f"unknown ids {unknown}" if unknown else "cites nothing"))
             continue
         claims.append(LLMClaim(text=c.text, evidence_ids=ev, decision_ids=dec))
     flags = []
     for f in out.semantic_flags:
         col = real(f.column)
         if col not in known_cols:
-            dropped += 1
+            dropped.append(f"semantic flag on unknown column {f.column!r}")
             continue
         flags.append(SemanticFlag(column=col, concern=f.concern, reason=f.reason))
 
@@ -144,7 +147,9 @@ def interpret_report(report: Any, llm: Any) -> Any:
     for s in out.suggested_answers:
         q = qmap.get(real(s.question_id))
         if q is None or q.answer is not None or s.option not in [o.value for o in q.options]:
-            dropped += 1
+            why = ("unknown question" if q is None else "already answered" if q.answer is not None
+                   else f"{s.option!r} is not an option")
+            dropped.append(f"suggestion for {s.question_id!r}: {why}")
             continue
         suggestions[q.id] = (s.option, s.reason)
     questions = [evolve(q, suggestion=suggestions[q.id][0], suggestion_reason=suggestions[q.id][1])
@@ -154,9 +159,9 @@ def interpret_report(report: Any, llm: Any) -> Any:
 
     llm_out = LLMInterpretation(
         provider=type(provider).__name__, model=str(model), summary=out.summary, priorities=claims,
-        questions_for_user=out.questions_for_user, semantic_flags=flags, dropped_claims=dropped,
-        disclosure=disclosure(cfg, type(provider).__name__, str(model), payload))
+        questions_for_user=out.questions_for_user, semantic_flags=flags, dropped_claims=len(dropped),
+        dropped=dropped, raw_response=raw, disclosure=disclosure(cfg, type(provider).__name__, str(model), payload))
     manifest = _next_revision(report.details.manifest, "interpret", provider=type(provider).__name__,
-                              model=str(model), column_names_sent=cfg.share_column_names, dropped_claims=dropped)
+                              model=str(model), column_names_sent=cfg.share_column_names, dropped_claims=len(dropped))
     details = evolve(report.details, manifest=manifest, llm=llm_out)
     return _carry(report, evolve(report, questions=questions, details=details))

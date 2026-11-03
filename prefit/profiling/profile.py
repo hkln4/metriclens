@@ -50,6 +50,11 @@ class DatasetProfile(Frozen):
     duplicate_fraction: float
     # groups of rows with identical features but different targets
     conflicting_duplicate_groups: int = 0
+    # distinct duplicated rows, and every row that has an identical twin (duplicate_rows counts extra copies)
+    duplicate_groups: int = 0
+    duplicate_rows_in_groups: int = 0
+    # are copies close together in row order? {median_gap, random_median_gap, p_value, n_permutations}
+    duplicate_adjacency: dict[str, Any] = Field(default_factory=dict)
     kind_counts: dict[str, int] = Field(default_factory=dict)
     missing_columns: tuple[str, ...] = ()
     # Jaccard co-missingness between the most-missing columns

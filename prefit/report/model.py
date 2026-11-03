@@ -14,9 +14,10 @@ interpret / register_external_holdout return a new Report with an incremented
 Surface:
 - reading:     print(report), to_html, to_markdown, roadmap, pending_questions(),
                decisions_table(), target, task
-- flow:        answer, verify, export, interpret, holdout, register_external_holdout
+- flow:        answer, resolve, change_task, verify, export, interpret, holdout,
+               register_external_holdout
 - automation:  decisions, decision(id), questions, experiments, metric_plan,
-               baseline, to_json, llm_payload
+               baseline, cv_estimate(), to_json, llm_payload
 - internals:   report.details.{findings, finding(id), evidence, profile, figures,
                manifest, context, limitations, rule_track_record, llm}
 """
@@ -65,6 +66,7 @@ class Finding(Frozen):
     evidence_ids: tuple[str, ...] = Field(min_length=1)
     thresholds: dict[str, float] = Field(default_factory=dict)
     columns: tuple[str, ...] = ()
+    task_dependent: bool = False     # only meaningful under the current task (e.g. class imbalance)
 
     def __repr__(self) -> str:
         near = ", near threshold" if self.trigger is Trigger.UNCERTAIN else ""
@@ -102,6 +104,9 @@ class Decision(Frozen):
     step: Step | None = None
     trigger: Trigger | None = None
     note: str = ""
+    task_dependent: bool = False  # only meaningful under the current task; flagged while it is unconfirmed
+    standard: bool = False        # standard practice that appears on every dataset (fit in fold, holdout, ...)
+    review_note: str = ""         # the user's note when a review item was closed with report.resolve
 
     def eligible(self, include_proxy_supported: bool = False) -> bool:
         """Whether this decision's step may enter an exported model recipe."""
@@ -174,10 +179,12 @@ class Experiment(Frozen):
     ci: tuple[float, float] | None = None
     p_value: float | None = None     # None when the split protocol admits no valid test
     p_adjusted: float | None = None
+    # equivalence (TOST against ±min_effect, same corrected SE), Holm-adjusted across the run
+    p_equivalence: float | None = None
     min_effect: float = 0.0          # practical threshold in metric units
     folds_improved: int = 0
     protocol: str = ""               # repeated_kfold / grouped_kfold / time_series
-    outcome: str = ""                # improved / worse / negligible / no_difference / not_tested
+    outcome: str = ""  # improved / worse / negligible / no_practical_effect / no_difference / not_tested
     seconds: float = 0.0
     method: str = ""
 
@@ -235,6 +242,8 @@ class LLMInterpretation(Frozen):
     questions_for_user: tuple[str, ...] = ()
     semantic_flags: tuple[SemanticFlag, ...] = ()
     dropped_claims: int = 0          # claims rejected for citing unknown ids/columns
+    dropped: tuple[str, ...] = ()    # what was rejected, and why (one line each)
+    raw_response: str = ""           # the model's reply exactly as received, for audit
     disclosure: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -245,6 +254,8 @@ class ContextState(Frozen):
     time_col: str | None = None
     estimator: str | None = None
     split_columns_as_features: bool = False
+    # review items closed by the user: decision id -> note (report.resolve)
+    resolutions: dict[str, str] = Field(default_factory=dict)
 
 
 class Manifest(Frozen):
@@ -324,12 +335,49 @@ class Report(Frozen):
 
         return decisions_table(self)
 
+    def cv_estimate(self, family: str | None = None) -> dict[str, Any] | None:
+        """The development cross-validation estimate from `verify`, in natural units
+        (errors positive): {"metric", "label", "mean", "std", "n_folds", "cv", "family",
+        "estimator"}. `family` defaults to your estimator ("user"), else the first proxy.
+        None before `verify`."""
+        from ..rules.metrics import label, natural
+
+        b = self.baseline
+        fams = b.get("families") or {}
+        if not fams:
+            return None
+        fam = family or ("user" if "user" in fams else next(iter(fams)))
+        if fam not in fams:
+            raise KeyError(f"No CV estimate for family {fam!r}; available: {sorted(fams)}")
+        f, mt = fams[fam], b["metric"]
+        return {"metric": mt, "label": label(mt), "mean": natural(mt, f["mean"]), "std": f["std"],
+                "n_folds": b.get("n_folds"), "cv": b.get("cv"), "family": fam, "estimator": f["estimator"]}
+
     # ---- flow ------------------------------------------------------------- #
     def answer(self, answers: dict[str, str]) -> Report:
         """New revision with these answers applied; contextual decisions are re-derived."""
         from ..api import _apply_answers
 
         return _apply_answers(self, answers)
+
+    def resolve(self, decision_id: str, note: str) -> Report:
+        """New revision closing a review item with your note (status `reviewed`).
+
+        Nothing in the data or the model recipe changes; the note is recorded, shown
+        in the report and in `pf.review`, and the item no longer counts as open."""
+        from ..api import _resolve
+
+        return _resolve(self, decision_id, note)
+
+    def change_task(self, df: Any, task: Any) -> Report:
+        """New revision analyzed as `task`, keeping what still applies.
+
+        `df` must be the frame passed to `analyze` (checked by fingerprint). Valid
+        answers, review notes, the registered external holdout and the options are
+        carried over; experiments are dropped, since they belong to the old task."""
+        from ..api import _change_task
+
+        return _change_task(self, df, task)
 
     def verify(self, df: Any, estimator: Any = None, budget: Any = None, groups: Any = None) -> Report:
         """New revision with bounded experiments for the conditional decisions.

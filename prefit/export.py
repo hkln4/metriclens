@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from .enums import ColumnKind, DecisionClass, Task
+from .enums import ColumnKind, DecisionClass, DecisionStatus, Task
 from .profiling.profile import DataProfile
 from .report.model import Step
 
@@ -72,6 +72,7 @@ class ExportResult:
     needs_estimator: list[dict[str, str]] = field(default_factory=list)
     unsupported: list[dict[str, str]] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    reviewed: list[dict[str, str]] = field(default_factory=list)
     scaled: bool = True
 
     @property
@@ -108,6 +109,9 @@ class ExportResult:
         if self.assumptions:
             lines.append("assumptions still open:")
             lines += [f"  ? {a}" for a in self.assumptions]
+        if self.reviewed:
+            lines.append("review items you closed:")
+            lines += [f"  ✓ {d['title']}: {d['note']}" for d in self.reviewed]
         return "\n".join(lines)
 
     def __str__(self) -> str:
@@ -119,6 +123,7 @@ _EXCLUDED_REASON = {
     "uncertain": "evidence is near the threshold and it was not tested",
     "supported_by_proxy": "only a proxy model supports it (pass include_proxy_supported=True to include)",
     "inconclusive": "experiment could not separate it from noise",
+    "no_practical_effect": "experiment shows no practical effect (equivalent within the practical threshold)",
     "refuted": "experiment shows it hurts",
     "not_applicable": "your estimator cannot take this change",
     "skipped_budget": "experiment budget ran out",
@@ -325,11 +330,14 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
         assumptions.append("metric priority unanswered; scoring is a provisional reporting set")
     if plan.positive_label is not None:
         assumptions.append(f"positive class = minority class '{plan.positive_label}'")
+    reviewed = []
     for d in report.decisions:
-        if d.cls is DecisionClass.REVIEW:
+        if d.cls is DecisionClass.REVIEW and d.status is DecisionStatus.REVIEWED:
+            reviewed.append({"id": d.id, "title": d.title, "note": d.review_note})
+        elif d.cls is DecisionClass.REVIEW:
             assumptions.append(f"review item open: {d.title}")
     return ExportResult(
         model=model, preprocessor=preprocessor, cv=build_cv(cv_step), scoring=scoring, feature_columns=cols,
         groups=ctx.groups if ctx.groups not in (None, "<array>") else None,
         sort_by=ctx.time_col, included=included, excluded=excluded, needs_estimator=needs_est,
-        unsupported=unsupported, assumptions=assumptions, scaled=scale)
+        unsupported=unsupported, assumptions=assumptions, reviewed=reviewed, scaled=scale)

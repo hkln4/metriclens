@@ -2,7 +2,8 @@
 
     pf.split(df, ...)            -> (dev_df, test_df)      data preparation, explicit
     pf.analyze(dev_df, ...)      -> Report                 profile -> rules -> figures
-    report.answer / verify / interpret / register_external_holdout -> new Report revision
+    report.answer / resolve / change_task / verify / interpret / register_external_holdout
+                                 -> new Report revision
     report.export(...)           -> model recipe
     pf.review(...)               -> post-training check
 
@@ -204,11 +205,17 @@ def load_report(source: str) -> Report:
 
 
 def review(y_true: Any, y_pred: Any, report: Report | None = None, *, y_score: Any = None,
-           segments: Any = None, task: Task | str | None = None) -> Any:
-    """Post-training review against the roadmap's assumptions (see `prefit.posttrain`)."""
+           segments: Any = None, task: Task | str | None = None, X: Any = None, n_bootstrap: int = 1000,
+           seed: int = 0) -> Any:
+    """Post-training review against the roadmap's assumptions (see `prefit.posttrain`).
+
+    Headline metrics get 95% bootstrap intervals; pass the test features as `X=` so
+    exact duplicate rows are resampled together. After `report.verify`, the review
+    also checks that the CV estimate lies inside the test interval."""
     from .posttrain import review as _review
 
-    return _review(y_true, y_pred, report=report, y_score=y_score, segments=segments, task=task)
+    return _review(y_true, y_pred, report=report, y_score=y_score, segments=segments, task=task, X=X,
+                   n_bootstrap=n_bootstrap, seed=seed)
 
 
 # --------------------------------------------------------------------------- #
@@ -241,7 +248,8 @@ def _validate_answers(answers: dict[str, str], out: RuleOutput) -> None:
     qs = {q.id: q for q in out.questions}
     for k, v in answers.items():
         if k not in qs:
-            raise KeyError(f"Unknown question '{k}'. Open questions: {sorted(qs)}")
+            raise KeyError(f"Unknown question '{k}'. Questions in this report: {sorted(qs)}. Review items are "
+                           "closed with report.resolve(decision_id, note), not answered.")
         allowed = [o.value for o in qs[k].options]
         if v not in allowed:
             raise ValueError(f"Answer '{v}' is not an option for '{k}'. Options: {allowed}")
@@ -327,6 +335,7 @@ def _rederive(report: Report, *, ctx_state: ContextState, manifest: Manifest, es
     out = run_rules(d.profile, _rule_context(ctx_state, estimator, Budget(**(manifest.budget or {})),
                                              manifest.external_holdout))
     _validate_answers(ctx_state.answers, out)
+    _apply_resolutions(out, ctx_state)
     experiments = report.experiments if experiments is None else experiments
     prev = {x.id: (x.status, x.note) for x in report.decisions
             if x.cls is DecisionClass.CONDITIONAL and x.status in
@@ -345,11 +354,61 @@ def _rederive(report: Report, *, ctx_state: ContextState, manifest: Manifest, es
     return _carry(report, new, estimator)
 
 
+def _apply_resolutions(out: RuleOutput, ctx: ContextState) -> None:
+    for i, d in enumerate(out.decisions):
+        if d.cls is DecisionClass.REVIEW and d.id in ctx.resolutions:
+            out.decisions[i] = evolve(d, status=DecisionStatus.REVIEWED, review_note=ctx.resolutions[d.id])
+
+
+def _resolve(report: Report, decision_id: str, note: str) -> Report:
+    did = decision_id if decision_id.startswith("d.") else f"d.{decision_id}"
+    d = report.decision(did)
+    if d.cls is not DecisionClass.REVIEW:
+        raise ValueError(f"{did} is a {d.cls.value} decision; only review items are resolved with a note. "
+                         + ("Answer its question with report.answer(...)." if d.question_id else ""))
+    if not isinstance(note, str) or not note.strip():
+        raise ValueError("resolve needs a note saying what you decided and why.")
+    ctx = report.details.context
+    ctx_state = evolve(ctx, resolutions={**ctx.resolutions, did: note.strip()})
+    manifest = _next_revision(report.details.manifest, "resolve", decision=did, note=note.strip())
+    return _rederive(report, ctx_state=ctx_state, manifest=manifest, estimator=report._estimator)
+
+
+def _change_task(report: Report, df: pd.DataFrame, task: Task | str) -> Report:
+    new_task = Task(getattr(task, "value", task))
+    m = report.details.manifest
+    check_fingerprint(df, m.source_fingerprint, report.target, "report.change_task", report._row_hashes)
+    ctx = report.details.context
+    if ctx.groups == "<array>":
+        raise ValueError("This report was built with a groups array, which is not stored; re-run "
+                         "pf.analyze(df, target, task=..., groups=...).")
+    first = m.history[0] if m.history else {}
+    common: dict[str, Any] = dict(
+        task=new_task, estimator=report._estimator, groups=ctx.groups, time_col=ctx.time_col,
+        holdout=first.get("holdout"), split_columns_as_features=ctx.split_columns_as_features, context=ctx.text,
+        budget=Budget(**(m.budget or {})), seed=m.seed, profile_options=ProfileOptions(**m.profile_options))
+    fresh = analyze(df, report.target, **common)
+    qs = {q.id: {o.value for o in q.options} for q in fresh.questions}
+    kept = {k: v for k, v in ctx.answers.items() if k != "q.task" and v in qs.get(k, set())}
+    dropped = sorted(set(ctx.answers) - set(kept) - {"q.task"})
+    review_ids = {d.id for d in fresh.decisions if d.cls is DecisionClass.REVIEW}
+    ctx_state = evolve(fresh.details.context, answers=kept,
+                       resolutions={k: v for k, v in ctx.resolutions.items() if k in review_ids})
+    rev = m.revision + 1
+    manifest = evolve(fresh.details.manifest, revision=rev, external_holdout=m.external_holdout, history=[
+        *m.history, {"revision": rev, "action": "change_task", "from": report.task.value, "task": new_task.value,
+                     "answers_kept": sorted(kept), "answers_dropped": dropped,
+                     "experiments_dropped": len(report.experiments)}])
+    return _rederive(fresh, ctx_state=ctx_state, manifest=manifest, estimator=report._estimator, experiments=(),
+                     baseline={}, notes={})
+
+
 def _apply_answers(report: Report, answers: dict[str, str]) -> Report:
     answers = _normalize_answers(answers)
     q_task = answers.get("q.task")
     if q_task is not None and q_task != report.task.value:
-        raise ValueError(f"You answered that the task is {q_task}: re-run pf.analyze(df, target, task='{q_task}').")
+        raise ValueError(f"You answered that the task is {q_task}: use report.change_task(df, '{q_task}'), which "
+                         "re-runs the analysis and keeps your answers, review notes and registered holdout.")
     ctx = report.details.context
     ctx_state = evolve(ctx, answers={**ctx.answers, **answers})
     manifest = _next_revision(report.details.manifest, "answer", answers=answers)

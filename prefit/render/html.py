@@ -28,6 +28,7 @@ from .common import (
     ICON,
     SEV_TONE,
     attention,
+    effect,
     experiment_summary,
     fmt,
     fmt_ci,
@@ -37,6 +38,7 @@ from .common import (
     partition_note,
     status_word,
     summary_counts,
+    task_dependence_note,
     task_note,
     tone,
 )
@@ -230,7 +232,10 @@ def _decision_card(r: Any, d: Any, inline_figs: set[str]) -> str:
     """Short card, open: status, title, why (+ decisive number), do, experiment summary,
     at most one figure. Everything else sits in closed <details>."""
     parts = [f'<article class="card" id="{aid(d.id)}" data-decision="{aid(d.id)}"><header>'
-             f"{status_badge(d.status)}{class_badge(d.cls)}<h3>{esc(d.title)}</h3></header>"]
+             f"{status_badge(d.status)}{class_badge(d.cls)}"
+             + (_badge("standard practice", "neutral", "Appears on every dataset; applied as a matter of course.")
+                if d.standard else "")
+             + f"<h3>{esc(d.title)}</h3></header>"]
     ke = key_evidence(r, d)
     parts.append(f'<p class="why"><span class="lbl">Why</span>{esc(d.why_short)}'
                  + (f' <span class="muted">({esc(ke)})</span>' if ke else "") + "</p>")
@@ -240,6 +245,11 @@ def _decision_card(r: Any, d: Any, inline_figs: set[str]) -> str:
         parts.append(f'<p class="exp"><span class="lbl">Experiment</span>{esc(ex)}</p>')
     if d.note:
         parts.append(f'<p class="note"><span class="lbl">Note</span>{esc(d.note)}</p>')
+    if d.review_note:
+        parts.append(f'<p class="note"><span class="lbl">Your note</span>{esc(d.review_note)}</p>')
+    tn = task_dependence_note(r, d)
+    if tn:
+        parts.append(f'<p class="note"><span class="lbl">Task</span>{esc(tn)}</p>')
     if d.question_id and d.status is DecisionStatus.AWAITING_USER:
         parts.append(f'<p><span class="lbl">Answer</span>{_link(d.question_id, "open question")}</p>')
 
@@ -254,12 +264,17 @@ def _decision_card(r: Any, d: Any, inline_figs: set[str]) -> str:
         parts.append(f'<details class="more"><summary>Show evidence</summary>{ev}</details>')
     exps = [e for e in r.experiments if e.decision_id == d.id]
     if exps:
-        erows = [[e.family, e.estimator, label(e.metric), fmt(e.mean_diff), fmt_ci(e.ci), fmt(e.p_adjusted),
-                  fmt(e.min_effect), f"{e.folds_improved}/{len(e.fold_diffs)}",
-                  ", ".join(f"{x:+.3g}" for x in e.fold_diffs), e.outcome] for e in exps]
+        erows = []
+        for e in exps:
+            change, ci, direction = effect(e)
+            sign = -1 if e.metric.startswith("neg_") else 1
+            erows.append([e.family, e.estimator, f"{label(e.metric)} ({direction})", fmt(change), fmt_ci(ci),
+                          fmt(e.p_adjusted), fmt(e.p_equivalence), f"±{fmt(e.min_effect)}",
+                          f"{e.folds_improved}/{len(e.fold_diffs)}",
+                          ", ".join(f"{sign * x:+.3g}" for x in e.fold_diffs), e.outcome])
         parts.append('<details class="more"><summary>Show experiment details</summary>'
-                     + table(["family", "estimator", "metric", "mean diff", "95% CI", "p (Holm)",
-                              "practical threshold", "folds improved", "per-fold differences", "outcome"], erows)
+                     + table(["family", "estimator", "metric", "change", "95% CI", "p (Holm)", "equivalence p (Holm)",
+                              "practical threshold", "folds improved", "per-fold changes", "outcome"], erows)
                      + f'<p class="links">CV: {esc(exps[0].cv)} · {esc(exps[0].method)} Development evidence on '
                        "the development rows only.</p></details>")
     others = [f for f in d.figure_ids if f != main]
@@ -366,7 +381,8 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
     b = r.baseline
     if b.get("families"):
         mt = b["metric"]
-        rows = [["dummy", "prior / median", fmt(natural(mt, b.get("dummy", {}).get("mean"))),
+        rows = [["dummy", "class prior" if r.task.value == "classification" else "median",
+                 fmt(natural(mt, b.get("dummy", {}).get("mean"))),
                  fmt(b.get("dummy", {}).get("std"))]]
         rows += [[k, v["estimator"], fmt(natural(mt, v["mean"])), fmt(v["std"])] for k, v in b["families"].items()]
         act.append(f"<details class=\"more\"><summary>Baseline ({esc(label(mt))}, {esc(b['cv'])}, "
@@ -377,7 +393,8 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
         act.append('<h3>Optional interpretation · LLM</h3><div class="llm">'
                    f'<p class="sub">Written by {esc(L.provider)} / {esc(L.model)} from the computed report only. It '
                    "cannot change any decision; every claim cites existing evidence or decision ids. "
-                   f"{L.dropped_claims} claim(s) were dropped for citing unknown ids.</p><p>{esc(L.summary)}</p>")
+                   f"{L.dropped_claims} item(s) were dropped (unknown ids or columns, invalid answer options)."
+                   f"</p><p>{esc(L.summary)}</p>")
         if L.priorities:
             act.append("<ul>" + "".join(f"<li>{esc(cl.text)} <span class=\"links\">"
                                         + ", ".join(_link(x) for x in cl.evidence_ids + cl.decision_ids)
@@ -386,6 +403,12 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
             act.append("<p><b>Semantic flags · manual review required</b></p><ul>" + "".join(
                 f"<li><b>{esc(s.column)}</b>: {esc(s.concern)} — {esc(s.reason)}</li>" for s in L.semantic_flags)
                 + "</ul>")
+        if L.dropped:
+            act.append("<details class=\"more\"><summary>What was dropped</summary><ul>"
+                       + "".join(f"<li>{esc(x)}</li>" for x in L.dropped) + "</ul></details>")
+        if L.raw_response:
+            act.append("<details class=\"more\"><summary>Raw response (as received)</summary><pre>"
+                       + esc(L.raw_response) + "</pre></details>")
         act.append("<details class=\"more\"><summary>What was sent</summary>"
                    + table(["field", "value"], [[k, v] for k, v in L.disclosure.items()]) + "</details></div>")
     act.append("</section>")
@@ -397,7 +420,13 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
                "Only applied, confirmed or verified steps enter the exported model recipe.</p>")
     for st in r.roadmap:
         out.append(f'<h3 style="margin-top:22px">{esc(st.title)} <span class="muted">· {esc(st.summary)}</span></h3>')
-        out += [_decision_card(r, r.decision(i), inline) for i in st.decision_ids]
+        ds = [r.decision(i) for i in st.decision_ids]
+        out += [_decision_card(r, d, inline) for d in ds if not d.standard]
+        std = [d for d in ds if d.standard]
+        if std:
+            out.append(f'<details class="more"><summary>Standard practice ({len(std)}): '
+                       + esc("; ".join(d.title for d in std)) + "</summary>"
+                       + "".join(_decision_card(r, d, inline) for d in std) + "</details>")
     out.append("</section>")
 
     # details: limitations visible, everything else collapsed

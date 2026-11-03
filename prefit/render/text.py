@@ -20,6 +20,7 @@ from .common import (
     next_step,
     partition_note,
     status_word,
+    task_dependence_note,
 )
 
 
@@ -49,8 +50,11 @@ def render_text(report: Any, md: bool) -> str:
     lines.append(H("Roadmap"))
     for st in report.roadmap:
         lines.append(B(st.title) + f" — {st.summary}")
+        standard = [report.decision(i) for i in st.decision_ids if report.decision(i).standard]
         for did in st.decision_ids:
             d = report.decision(did)
+            if d.standard:
+                continue
             lines.append(f"- [{CLASS_LABEL[d.cls]} · {status_word(d.status)}] {d.title}")
             ke = key_evidence(report, d)
             lines.append(f"    why: {d.why_short}" + (f" ({ke})" if ke else ""))
@@ -60,6 +64,14 @@ def render_text(report: Any, md: bool) -> str:
                 lines.append(f"    experiment: {ex}")
             if d.note:
                 lines.append(f"    note: {d.note}")
+            if d.review_note:
+                lines.append(f"    your note: {d.review_note}")
+            tn = task_dependence_note(report, d)
+            if tn:
+                lines.append(f"    task: {tn}")
+        if standard:
+            lines.append("- standard practice (applied on every dataset): "
+                         + "; ".join(f"{d.title} ({d.id})" for d in standard))
         lines.append("")
 
     mp = report.metric_plan

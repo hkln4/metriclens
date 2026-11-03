@@ -90,6 +90,7 @@ class DecisionStatus(str, Enum):
     VERIFIED = "verified"                  # experiment with the user's estimator supports it
     SUPPORTED_BY_PROXY = "supported_by_proxy"  # only a proxy model supports it (sensitivity)
     INCONCLUSIVE = "inconclusive"          # experiment ran, difference within noise
+    NO_PRACTICAL_EFFECT = "no_practical_effect"  # experiment shows equivalence within the practical threshold
     REFUTED = "refuted"                    # experiment shows it hurts
     NOT_APPLICABLE = "not_applicable"      # the estimator cannot take this change
     SKIPPED_BUDGET = "skipped_budget"      # experiment budget exhausted
@@ -97,3 +98,4 @@ class DecisionStatus(str, Enum):
     CONFIRMED = "confirmed"                # contextual, user said yes
     DECLINED = "declined"                  # contextual, user said no
     NEEDS_REVIEW = "needs_review"          # review item
+    REVIEWED = "reviewed"                  # review item the user closed with a note (report.resolve)

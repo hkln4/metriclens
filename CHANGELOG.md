@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/); before 1.0, minor versions may
 change the public API.
 
+## 0.3.0 — 2026-11-03
+
+Feedback from the Red Wine Quality guide on Kaggle, each item verified on that
+data before it was changed (one proposal, "skip transforms for tree models",
+was refuted there and is not in this release: RandomForest predictions do
+change under monotone transforms, only the score barely moves).
+
+### Added
+- Equivalence test for experiments: TOST against ±the practical threshold with
+  the same corrected standard error, Holm-adjusted (`Experiment.p_equivalence`).
+  New outcome and status `no_practical_effect`; a non-significant result without
+  equivalence stays `inconclusive`, now with a note saying why.
+- `pf.review(..., X=, n_bootstrap=, seed=)`: seeded 95% bootstrap intervals on the
+  headline metrics (`ReviewReport.intervals`), resampling exact duplicates
+  together when `X` is given, and a check that the CV estimate lies inside the
+  test interval.
+- `report.cv_estimate(family=None)`: the development CV estimate in natural units.
+- `report.resolve(decision_id, note)`: close a review item with a note (status
+  `reviewed`); shown in the report, `export().reviewed` / `describe()` and
+  `pf.review`, carried through later revisions and JSON.
+- `report.change_task(df, task)`: re-analyze under another task on the same
+  fingerprint-checked frame, keeping valid answers, review notes, the external
+  holdout and the options; `answer({"task": ...})` points to it.
+- `Finding.task_dependent` / `Decision.task_dependent`: items that exist only
+  under the inferred task are flagged while it is unconfirmed, in the report and
+  in the LLM payload (`task_confirmed`, `task_dependent`); the prompt tells the
+  model not to build advice on them.
+- `Decision.standard`: standard practice (fit in fold, plain CV, holdout rule) is
+  grouped apart in the text and HTML reports; `decisions_table()` gains
+  `standard` and `note` columns.
+- Duplicate evidence: `duplicate_groups`, `duplicate_rows_in_groups` and
+  `duplicate_adjacency` (median row distance between copies vs. random order,
+  permutation test) in the profile and the duplicate review item.
+- `LLMInterpretation.dropped` (what was rejected and why) and `.raw_response`.
+
+### Changed
+- Rules: `task_confirmation` v2 (ordered-score hint in the question and option
+  labels), `validation_split` v4, `holdout_policy` v3, `fit_in_fold` v3
+  (standard flag), `duplicate_rows` v3 (extra copies vs. rows in groups,
+  adjacency, resolve hint), `skewed_features` v3 (accurate near-threshold text).
+- Experiment changes are shown in natural units ("MAE +0.0002 (lower = better)"
+  instead of a negated score labelled "higher = better").
+- Report text: "the test set (321 rows) was registered" (was "an test set"); the
+  regression baseline row says "median", classification "class prior"; unknown
+  answer keys list every question and point review items to `resolve`.
+
 ## 0.2.0 — 2026-11-03
 
 Exact duplicate rows no longer leak across splits. This changes which rows land

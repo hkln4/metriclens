@@ -42,7 +42,7 @@ def profile_tabular(
     return DataProfile(
         task=task, task_inferred=task_inferred,
         target=_profile_target(y, task, task_inferred, task_evidence, options, seed),
-        dataset=_profile_dataset(df, target, feature_cols, columns, n_rows_input),
+        dataset=_profile_dataset(df, target, feature_cols, columns, n_rows_input, seed),
         columns=columns,
         relations=_profile_relations(df, target, task, columns, options.max_corr_features),
         roles=roles, sampling=sampling, holdout=holdout,
@@ -163,13 +163,15 @@ def _profile_target(
 
 def _profile_dataset(
     df: pd.DataFrame, target: str, feature_cols: list, columns: dict[str, ColumnProfile],
-    n_rows_input: int,
+    n_rows_input: int, seed: int = 0,
 ) -> DatasetProfile:
     n = len(df)
     cols = [*feature_cols, target]
     # hash rows directly (no string conversion): fast on wide/long frames
     row_hash = pd.util.hash_pandas_object(df[cols], index=False)
     dup_mask = row_hash.duplicated()
+    in_group = row_hash.duplicated(keep=False).to_numpy()
+    adjacency = st.copy_adjacency(pd.factorize(row_hash)[0], seed) if dup_mask.any() else {}
     conflicting = 0
     if feature_cols:
         feat_hash = pd.util.hash_pandas_object(df[feature_cols], index=False).to_numpy()
@@ -194,7 +196,8 @@ def _profile_dataset(
     return DatasetProfile(
         n_rows=n, n_rows_input=n_rows_input, n_columns=df.shape[1], n_features=len(feature_cols),
         duplicate_rows=int(dup_mask.sum()), duplicate_fraction=st.r(float(dup_mask.mean()) if n else 0.0),
-        conflicting_duplicate_groups=conflicting, kind_counts=kind_counts,
+        conflicting_duplicate_groups=conflicting, duplicate_groups=int(in_group.sum() - dup_mask.sum()),
+        duplicate_rows_in_groups=int(in_group.sum()), duplicate_adjacency=adjacency, kind_counts=kind_counts,
         missing_columns=missing_cols, missing_cooccurrence=cooc,
     )
 

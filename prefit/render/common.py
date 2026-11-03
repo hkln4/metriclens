@@ -7,7 +7,7 @@ from typing import Any
 from ..assemble import status_word
 from ..enums import DecisionClass, DecisionStatus, Severity
 
-GOOD = {DecisionStatus.APPLIED, DecisionStatus.CONFIRMED, DecisionStatus.VERIFIED}
+GOOD = {DecisionStatus.APPLIED, DecisionStatus.CONFIRMED, DecisionStatus.VERIFIED, DecisionStatus.REVIEWED}
 ATTENTION = {DecisionStatus.AWAITING_USER, DecisionStatus.NEEDS_REVIEW, DecisionStatus.UNCERTAIN}
 BAD = {DecisionStatus.REFUTED}
 
@@ -119,16 +119,38 @@ def key_evidence(report: Any, d: Any) -> str:
     return ""
 
 
+def effect(e: Any) -> tuple[float, tuple[float, float] | None, str]:
+    """An experiment's change in natural metric units: (change, ci, direction).
+    Error metrics (sklearn's neg_*) are shown as errors, where lower is better."""
+    if e.metric.startswith("neg_"):
+        ci = (-e.ci[1], -e.ci[0]) if e.ci else None
+        return -e.mean_diff, ci, "lower = better"
+    return e.mean_diff, (tuple(e.ci) if e.ci else None), "higher = better"
+
+
 def experiment_summary(report: Any, d: Any) -> str:
+    from ..rules.metrics import label
+
     exps = [e for e in report.experiments if e.decision_id == d.id]
     parts = []
     for e in exps:
         p = f", Holm p={fmt(e.p_adjusted)}" if e.p_adjusted is not None else ", no p-value (time-ordered folds)"
-        from ..rules.metrics import label
-
-        parts.append(f"{e.family} ({e.estimator}): {label(e.metric)} change {e.mean_diff:+.4g} (higher = better), "
+        if e.p_equivalence is not None:
+            p += f", equivalence p={fmt(e.p_equivalence)}"
+        change, _, direction = effect(e)
+        parts.append(f"{e.family} ({e.estimator}): {label(e.metric)} {change:+.4g} ({direction}), "
                      f"{e.folds_improved}/{len(e.baseline_scores)} folds better{p} -> {e.outcome}")
     return "; ".join(parts)
+
+
+def task_unconfirmed(report: Any) -> bool:
+    return bool(report.details.profile.task_inferred) and report.details.context.answers.get("q.task") is None
+
+
+def task_dependence_note(report: Any, d: Any) -> str:
+    if not (d.task_dependent and task_unconfirmed(report)):
+        return ""
+    return f"Assumes the inferred task ({report.task.value}); it changes if you answer q.task otherwise."
 
 
 def partition_note(report: Any) -> str:
@@ -149,7 +171,7 @@ def partition_note(report: Any) -> str:
         ov = ext.get("overlap_rows")
         ov_txt = "" if ov is None else (f" Exact row overlap with the development data: {ov} row(s)." if ov
                                         else " No exact row overlap with the development data.")
-        return (f"{base} Prefit did not reserve an internal holdout; an {ext['name']} of {ext['n_rows']:,} rows "
+        return (f"{base} Prefit did not reserve an internal holdout; the {ext['name']} ({ext['n_rows']:,} rows) "
                 f"was registered (metadata only, never profiled).{ov_txt}")
     return (f"{base} Prefit did not reserve an internal holdout. If you split off a test set before analyze, "
             "register it with report.register_external_holdout(test_df); otherwise estimate final performance "
@@ -170,6 +192,6 @@ def headline(report: Any) -> str:
             f"{c['questions']} question(s) open, {c['critical_or_review']} critical/review decision(s).")
 
 
-__all__ = ["partition_note", "fmt", "fmt_ci", "tone", "ICON", "SEV_TONE", "CLASS_LABEL", "CLASS_HELP",
+__all__ = ["effect", "task_unconfirmed", "task_dependence_note", "partition_note", "fmt", "fmt_ci", "tone", "ICON", "SEV_TONE", "CLASS_LABEL", "CLASS_HELP",
            "summary_counts", "attention", "next_step", "key_evidence", "experiment_summary", "headline",
            "status_word"]
