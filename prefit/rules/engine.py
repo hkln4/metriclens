@@ -29,7 +29,7 @@ class RuleOutput:
 
 
 def rule_versions() -> dict[str, str]:
-    return {r.id: r.version for r in CATALOG} | {"metric_policy": "1"}
+    return {r.id: r.version for r in CATALOG} | {"metric_policy": "2"}
 
 
 def rules() -> list[Rule]:
@@ -48,7 +48,7 @@ def run_rules(profile: DataProfile, ctx: RuleContext) -> RuleOutput:
         if r.tasks is not None:
             task_specific[0].update(f.id for f in out.findings[nf:])
             task_specific[1].update(d.id for d in out.decisions[nd:])
-    out.rule = Rule("metric_policy", "1", lambda *a: None, {}, None, "")
+    out.rule = Rule("metric_policy", "2", lambda *a: None, {}, None, "")
     nd = len(out.decisions)
     plan = metric_policy(profile, ctx, out, {f.id for f in out.findings})
     task_specific[1].update(d.id for d in out.decisions[nd:])  # metric options follow the task

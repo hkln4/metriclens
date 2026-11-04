@@ -8,7 +8,7 @@ import prefit as pf
 def test_plain_text_has_no_markdown(messy_df):
     text = str(pf.analyze(messy_df, "y"))
     assert "**" not in text and "##" not in text
-    for s in ("PREFIT REPORT", "Next step:", "ROADMAP", "QUESTIONS FOR YOU", "METRICS", "LIMITATIONS"):
+    for s in ("PREFIT REPORT", "Status:", "Run next:", "ROADMAP", "QUESTIONS FOR YOU", "METRICS", "LIMITATIONS"):
         assert s in text
 
 
@@ -142,5 +142,5 @@ def test_roadmap_stages_are_numbered_consecutively(messy_df):
 def test_first_screen_has_the_essentials(messy_df):
     h = pf.analyze(messy_df, "y").to_html()
     summary = h[h.index('id="summary"'):h.index('id="actions"')]
-    for s in ("development rows", "questions awaiting your answer", "critical or review decisions", "Next step:"):
+    for s in ("development rows", "needs you", "tested", "done", "Next step:", "report.answer("):
         assert s in summary

@@ -35,5 +35,5 @@ class AnthropicProvider(Provider):
         response = self._client.messages.create(
             model=self.model, max_tokens=self._max_tokens, system=system,
             messages=[{"role": "user", "content": user}])
-        parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+        parts = [getattr(b, "text", "") for b in response.content if getattr(b, "type", None) == "text"]
         return "\n".join(parts).strip()

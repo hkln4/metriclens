@@ -17,8 +17,10 @@ import pandas as pd
 
 from ..config import ProfileOptions
 from ..enums import ColumnKind, Task
+from ..frozen import evolve
 from . import stats as st
-from .kinds import infer_kind
+from .kinds import infer_kind, missing_mask, to_numeric
+from .missingness import profile_missingness
 from .profile import ColumnProfile, DataProfile, DatasetProfile, Relations, TargetProfile
 
 
@@ -39,13 +41,16 @@ def profile_tabular(
     y = df[target]
     classification = task is Task.CLASSIFICATION
     columns = {str(c): _profile_column(df[c], y, classification, options, seed) for c in feature_cols}
+    relations, corr = _profile_relations(df, target, task, columns, options.max_corr_features,
+                                         options.association_rows, seed)
+    miss = profile_missingness(df, target, columns, classification, options.association_rows, seed, corr,
+                               options.redact_values)
+    columns = {c: (evolve(cp, missingness=miss[c]) if c in miss else cp) for c, cp in columns.items()}
     return DataProfile(
         task=task, task_inferred=task_inferred,
         target=_profile_target(y, task, task_inferred, task_evidence, options, seed),
         dataset=_profile_dataset(df, target, feature_cols, columns, n_rows_input, seed),
-        columns=columns,
-        relations=_profile_relations(df, target, task, columns, options.max_corr_features),
-        roles=roles, sampling=sampling, holdout=holdout,
+        columns=columns, relations=relations, roles=roles, sampling=sampling, holdout=holdout,
     )
 
 
@@ -67,16 +72,17 @@ def _finite(s: pd.Series) -> pd.Series:
 def _profile_column(s: pd.Series, y: pd.Series, classification: bool, options: ProfileOptions,
                     seed: int) -> ColumnProfile:
     n = len(s)
-    n_missing = int(s.isna().sum())
     kind, reason = infer_kind(s)
-    non_null = s.dropna()
+    miss = missing_mask(s, kind)
+    n_missing = int(miss.sum())
+    non_null = s[~miss]
     cardinality = int(non_null.nunique())
     stats: dict[str, Any] = {}
     ci: dict[str, tuple[float, float]] = {}
     if kind is ColumnKind.NUMERIC:
-        raw = pd.to_numeric(non_null, errors="coerce").astype(float)
+        raw = to_numeric(non_null)
         n_inf = int(np.isinf(raw).sum())
-        finite = _finite(s)
+        finite = _finite(to_numeric(s))
         stats = st.numeric_stats(finite)
         stats["inf_count"] = n_inf
         v = finite.dropna().to_numpy()
@@ -94,22 +100,24 @@ def _profile_column(s: pd.Series, y: pd.Series, classification: bool, options: P
     elif kind in (ColumnKind.TEXT, ColumnKind.ID_LIKE):
         stats = {"mean_length": st.r(float(non_null.astype(str).str.len().mean()), 2)}
 
-    association = None
+    association = signal = None
     if kind not in (ColumnKind.CONSTANT, ColumnKind.TEXT):
         if kind is ColumnKind.DATETIME:
             x, numeric = _datetime_as_number(s), True
         elif kind is ColumnKind.NUMERIC:
-            x, numeric = _finite(s), True
+            x, numeric = _finite(to_numeric(s)), True
         else:
             numeric = kind is ColumnKind.BOOLEAN or (kind is ColumnKind.ID_LIKE and pd.api.types.is_numeric_dtype(s))
             x = s
-        association = st.single_feature_score(x, y, numeric, classification, seed)
+        scores = st.single_feature_scores(x, y, numeric, classification, seed, options.association_rows)
+        if scores is not None:
+            association, signal = scores
 
     return ColumnProfile(
         name=str(s.name), kind=kind, kind_reason=reason, dtype=str(s.dtype),
         missing_fraction=st.r(n_missing / n if n else 0.0), missing_ci=st.wilson_ci(n_missing, n),
         cardinality=cardinality, unique_ratio=st.r(cardinality / len(non_null) if len(non_null) else 0.0),
-        stats=stats, ci=ci, association=association,
+        stats=stats, ci=ci, association=association, signal=signal,
     )
 
 
@@ -187,7 +195,7 @@ def _profile_dataset(
     cooc: dict[str, Any] = {}
     if len(missing_cols) >= 3:
         top = missing_cols[:15]
-        m = df[top].isna().to_numpy()
+        m = np.column_stack([missing_mask(df[c], columns[c].kind).to_numpy() for c in top])
         inter = m.T.astype(int) @ m.astype(int)
         union = m.sum(0)[:, None] + m.sum(0)[None, :] - inter
         jac = np.where(union > 0, inter / np.maximum(union, 1), 0.0)
@@ -202,9 +210,44 @@ def _profile_dataset(
     )
 
 
+def _rank_corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Pearson correlation of the columns of a with the columns of b, both already ranked."""
+    a = a - a.mean(0)
+    b = b - b.mean(0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (a.T @ b) / np.sqrt(np.outer((a * a).sum(0), (b * b).sum(0)))
+
+
+def _spearman(fin: pd.DataFrame) -> pd.DataFrame:
+    """Pairwise-complete Spearman correlation, equal to fin.corr("spearman") but fast:
+    complete columns are ranked once; a column with missing values is ranked on its
+    observed rows against the complete ones; only pairs of incomplete columns go to pandas."""
+    cols = list(fin.columns)
+    has_na = fin.isna().any().to_numpy()
+    comp = [c for c, h in zip(cols, has_na) if not h]
+    inc = [c for c, h in zip(cols, has_na) if h]
+    out = pd.DataFrame(np.nan, index=cols, columns=cols)
+    if comp:
+        rc = fin[comp].rank().to_numpy()
+        out.loc[comp, comp] = _rank_corr(rc, rc)
+    for c in inc:
+        ok = fin[c].notna().to_numpy()
+        if comp and ok.sum() >= 2:
+            rv = fin.loc[ok, comp].rank().to_numpy()
+            rx = fin.loc[ok, [c]].rank().to_numpy()
+            v = _rank_corr(rx, rv)[0]
+            out.loc[c, comp] = v
+            out.loc[comp, c] = v
+    if inc:
+        out.loc[inc, inc] = fin[inc].corr(method="spearman")
+    return out
+
+
 def _profile_relations(
     df: pd.DataFrame, target: str, task: Task, columns: dict[str, ColumnProfile], max_corr: int,
-) -> Relations:
+    max_rows: int = 50_000, seed: int = 0,
+) -> tuple[Relations, pd.DataFrame | None]:
+    """(Relations, the full Spearman matrix of the numeric features or None)."""
     numeric = [c for c, p in columns.items() if p.kind is ColumnKind.NUMERIC]
     pearson: dict[str, float] = {}
     if task is Task.REGRESSION and pd.api.types.is_numeric_dtype(df[target]):
@@ -216,15 +259,22 @@ def _profile_relations(
     corr_cols: list[str] = []
     corr_matrix: list[list[float | None]] = []
     pairs: list[dict[str, Any]] = []
+    full_df: pd.DataFrame | None = None
     if len(numeric) >= 2:
-        fin = df[numeric].apply(_finite)
-        corr_cols = sorted(numeric, key=lambda c: -(columns[c].association or 0.0))[:max_corr]
-        corr_matrix = [[st.r(x, 3) for x in row] for row in fin[corr_cols].corr(method="spearman").to_numpy()]
+        # one Spearman matrix (on a seeded row sample for long frames); the shown block is a slice of it
+        rows = df if len(df) <= max_rows else df.sample(max_rows, random_state=seed)
+        cols = numeric if len(numeric) <= 200 else sorted(numeric, key=lambda c: -(columns[c].association or 0.0))[:200]
+        full_df = _spearman(rows[cols].apply(_finite))
+        corr_cols = sorted(cols, key=lambda c: -(columns[c].association or 0.0))[:max_corr]
+        corr_matrix = [[st.r(x, 3) for x in row] for row in full_df.loc[corr_cols, corr_cols].to_numpy()]
         if len(numeric) <= 200:
-            full = fin.corr(method="spearman").to_numpy()
-            for i, j in zip(*np.triu_indices(len(numeric), k=1)):
-                v = full[i, j]
-                if np.isfinite(v) and abs(v) >= 0.95:
-                    pairs.append({"a": numeric[i], "b": numeric[j], "spearman": st.r(float(v), 4)})
+            full = full_df.to_numpy()
+            iu, ju = np.triu_indices(len(cols), k=1)
+            v = full[iu, ju]
+            hit = np.isfinite(v) & (np.abs(v) >= 0.95)
+            pairs = [{"a": cols[i], "b": cols[j], "spearman": st.r(float(x), 4)}
+                     for i, j, x in zip(iu[hit], ju[hit], v[hit])]
     return Relations(corr_columns=corr_cols, corr_matrix=corr_matrix,
-                     high_corr_pairs=sorted(pairs, key=lambda p: -abs(p["spearman"]))[:50], pearson_target=pearson)
+                     high_corr_pairs=sorted(pairs, key=lambda p: -abs(p["spearman"]))[:50], pearson_target=pearson,
+                     corr_method="Spearman rank correlation"
+                     + (f" (seeded sample of {max_rows:,} rows)" if len(df) > max_rows else "")), full_df

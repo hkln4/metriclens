@@ -3,8 +3,9 @@
 .venv/
 venv/
 
-# notebooks (scratch work; examples live in examples/*.py)
+# notebooks: scratch work is ignored; the case-study notebooks in benchmarks/notebooks/ are tracked
 *.ipynb
+!benchmarks/notebooks/*.ipynb
 .ipynb_checkpoints/
 
 # python / tooling caches

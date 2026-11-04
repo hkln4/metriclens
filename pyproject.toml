@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prefit"
-version = "0.3.1"
+version = "0.4.0"
 description = "Decision-driven EDA for tabular supervised learning: evidence-backed, verifiable pre-training decisions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,6 +48,8 @@ dev = [
     "prefit[verify,report]",
     "pytest>=7",
     "pytest-cov>=4",
+    "pytest-xdist>=3",
+    "hypothesis>=6",
     "ruff>=0.5",
     "mypy>=1.8",
     "pandas-stubs",
@@ -93,7 +95,10 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: experiments with real models (deselect with -m 'not slow')"]
+markers = [
+    "slow: experiments with real models, simulations, timing (deselect with -m 'not slow')",
+    "network: downloads real datasets into ~/.cache/prefit (skipped when offline)",
+]
 
 [tool.coverage.run]
 source = ["prefit"]

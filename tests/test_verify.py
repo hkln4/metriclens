@@ -109,3 +109,23 @@ def test_repeated_kfold_protocol_is_named():
                      budget=pf.Budget(max_experiments=1, n_repeats=2))
     e = rep.experiments[0]
     assert e.protocol == "repeated_kfold" and "Bouckaert" in e.method and len(e.fold_diffs) == 10
+
+
+def test_cv_estimate_describes_the_exported_recipe():
+    """When verify verifies a change, export() includes it; the CV estimate must be for that recipe,
+    not for the base setup (found by the real-data benchmark on Adult: class weights)."""
+    from fixtures import imbalanced
+    from sklearn.linear_model import LogisticRegression
+
+    df = imbalanced()
+    rep = pf.analyze(df, "y", task="classification", estimator=LogisticRegression(max_iter=500),
+                     answers={"metric_priority": "symmetric"})
+    rep = rep.verify(budget=pf.Budget(n_repeats=1))
+    est = rep.cv_estimate()
+    included = {x["id"] for x in rep.export().included}
+    if "d.class_weight" in included:
+        e = next(x for x in rep.experiments if x.decision_id == "d.class_weight")
+        assert est["recipe"] == ["d.class_weight"]
+        assert est["mean"] == pytest.approx(float(np.mean(e.candidate_scores)))
+    else:
+        assert est["recipe"] == []

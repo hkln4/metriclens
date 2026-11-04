@@ -26,9 +26,9 @@ BOOT = "bootstrap 95% percentile interval (seeded)"
 # Setup & split
 # --------------------------------------------------------------------------- #
 
-@rule("task_confirmation", "2", description="Ask the user to confirm an inferred task.")
+@rule("task_confirmation", "4", description="Ask the user to confirm an inferred task when it is ambiguous.")
 def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
-    if not p.task_inferred:
+    if not p.task_needs_answer:
         return
     te = p.target.task_evidence
     other = REG if p.task is CLS else CLS
@@ -44,9 +44,9 @@ def task_confirmation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     contextual(out, ctx, qid="task", question=f"Is this a {p.task.value} task?{hint}",
                options=[(p.task.value, labels[p.task], "keeps the current analysis"),
                         (other.value, labels[other],
-                         f"report.change_task(df, '{other.value}') re-runs the analysis and keeps your answers, "
-                         "review notes and registered holdout")],
-               confirm=p.task.value, decision_id="task", title=f"Treat the task as {p.task.value}",
+                         f"answer(task='{other.value}') re-runs the analysis on the same rows and keeps your "
+                         "answers, review notes and holdout")],
+               confirm=p.task.value, decision_id="task", title=f"Treat the task as {p.task.value}", keyword="task",
                stage="split", action=f"Analyze and evaluate as a {p.task.value} problem.",
                rationale=f"Inferred from the target: {te.get('reason')}.",
                risk="A wrong task changes every metric and split recommendation. Until you answer, findings "
@@ -212,7 +212,7 @@ def small_data(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  finding_ids=[f], evidence_ids=[e], why=f"Only {n} development rows: fold-to-fold noise is large.", do="Compare models only when the gap exceeds the fold spread.")
 
 
-@rule("temporal_order", "1", description="Datetime columns exist but no time_col was given.")
+@rule("temporal_order", "2", description="Datetime columns exist but no time_col was given.")
 def temporal_order(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     dts = p.kind_of(ColumnKind.DATETIME)
     if not dts or ctx.time_col:
@@ -223,9 +223,9 @@ def temporal_order(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                     [e], dts)
     contextual(out, ctx, qid="temporal", question=(
         f"Will the model predict future rows from past ones (time order matters for {dts[0]})?"),
-        options=[("yes", "Yes, predict the future", f"re-run pf.analyze(..., time_col='{dts[0]}') for a time-ordered holdout and TimeSeriesSplit"),
-                 ("no", "No, rows are exchangeable", "keep random cross-validation")],
-        confirm="yes", decision_id="temporal", title="Split by time", stage="split",
+        options=[("yes", "Yes, predict the future", f"re-run pf.analyze(..., time_col='{dts[0]}') for a time-ordered holdout and TimeSeriesSplit", {"flag": True}),
+                 ("no", "No, rows are exchangeable", "keep random cross-validation", {"flag": False})],
+        keyword="time_order", confirm="yes", decision_id="temporal", title="Split by time", stage="split",
         action=f"Re-run with time_col='{dts[0]}' so the holdout is the latest period and CV uses TimeSeriesSplit.",
         rationale="Random splits let a model train on the future and test on the past, which flatters every metric.",
         risk="Random CV on time-ordered data is a common source of over-optimistic scores.",
@@ -361,7 +361,7 @@ def conflicting_duplicates(p: DataProfile, ctx: RuleContext, out: Emitter) -> No
                  finding_ids=[f], evidence_ids=[e])
 
 
-@rule("high_missingness", "1", thresholds={"warn_fraction": 0.2, "drop_candidate_fraction": 0.5})
+@rule("high_missingness", "2", thresholds={"warn_fraction": 0.2, "drop_candidate_fraction": 0.5})
 def high_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     fired, uncertain, drop = [], [], []
     for c, cp in p.columns.items():
@@ -380,19 +380,10 @@ def high_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     evs = [out.ev(f"col.{c}.missing", f"Missing fraction · {c}", p.columns[c].missing_fraction, WILSON,
                   ci=p.columns[c].missing_ci, columns=[c]) for c in cols]
     trig = Trigger.FIRED if fired else Trigger.UNCERTAIN
-    sev = Severity.WARN
     msg = f"{len(fired)} column(s) are >= 20% missing"
     if uncertain:
         msg += f"; {len(uncertain)} more are near the threshold (interval straddles 20%)"
-    f = out.finding("high_missingness", sev, trig, msg + ".", evs, cols)
-    out.decision("missingness_review", "Check whether missingness is informative", DecisionClass.REVIEW,
-                 "data_review",
-                 "Ask how these values went missing. Missing-not-at-random values carry signal (kept via the "
-                 "missing-indicator columns) and may differ in production.",
-                 "Imputation assumes the missing values resemble the observed ones; that is often false.",
-                 risk="If missingness is caused by the target (e.g. a test only ordered for sick patients), the "
-                      "indicator itself can be a leak.",
-                 finding_ids=[f], evidence_ids=evs, why=f"{len(cols)} column(s) are >= 20% missing; missingness may itself be informative.", do="Ask how the values went missing.")
+    f = out.finding("high_missingness", Severity.WARN, trig, msg + ".", evs, cols)
     if drop:
         dev = [e for e, c in zip(evs, cols) if c in drop]
         out.decision("drop_mostly_missing", f"Drop {len(drop)} mostly-missing column(s)", DecisionClass.CONDITIONAL,
@@ -404,7 +395,191 @@ def high_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                      finding_ids=[f], evidence_ids=dev, step=Step(kind="drop_columns", params={"columns": drop}),
                      why=f"{len(drop)} column(s) are >= 50% missing; their missing indicator may still be informative.",
                      do="Test dropping them with your estimator (report.verify).",
-                     trig=Trigger.FIRED)
+                     trig=Trigger.FIRED,
+                     alternatives=["Keep them with median imputation + missing indicator (the default) — right "
+                                   "when the pattern of missingness predicts the target (see the missingness "
+                                   "items).",
+                                   "Keep only the missing indicator — right when the observed values are too few "
+                                   "to learn from but the fact of missingness carries signal."])
+
+
+def _miss_target_text(c: str, t: dict) -> str:
+    if t["kind"] == "class_share":
+        return (f"where '{c}' is missing, class '{t['class']}' is {t['missing']:.0%} of rows; where it is present, "
+                f"{t['observed']:.0%} (permutation p = {t['p_value']:.3f})")
+    return (f"where '{c}' is missing, the target averages {t['missing']:.4g}; where it is present, "
+            f"{t['observed']:.4g} (permutation p = {t['p_value']:.3f})")
+
+
+def _miss_effect(t: dict) -> float:
+    """Practical size of the target difference: share points, or standard deviations of the target."""
+    if t["kind"] == "class_share":
+        return float(t["statistic"])
+    return abs(t["missing"] - t["observed"]) / t["std"] if t.get("std") else 0.0
+
+
+def _structural_value(sv: dict) -> str:
+    return f"'{sv['column']}' = {sv['value']!r}" if not sv["numeric_value"] else f"'{sv['column']}' = {sv['value']}"
+
+
+@rule("structural_missingness", "1", thresholds={"coverage": 0.95, "precision": 0.95},
+      description="A numeric column is missing exactly when another column takes one value.")
+def structural_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    for c, cp in p.columns.items():
+        sv = cp.missingness.get("structural")
+        if not sv or cp.kind is not ColumnKind.NUMERIC:
+            continue
+        k = cp.missingness["n_missing"]
+        where = _structural_value(sv)
+        e = out.ev(f"col.{c}.structural_missing", f"Missing exactly where {where} · {c}",
+                   {"missing_rows_with_value": f"{round(sv['coverage'] * k)} of {k}",
+                    "value_rows_missing": f"{round(sv['precision'] * sv['n_value_rows'])} of {sv['n_value_rows']}"},
+                   f"share of the missing rows of '{c}' where {where}, and share of the rows with {where} where "
+                   f"'{c}' is missing (development rows)", columns=[c, sv["column"]])
+        evs = [e]
+        t = cp.missingness.get("target")
+        if t:
+            evs.append(out.ev(f"col.{c}.missing_target", f"Target where missing vs present · {c}",
+                              {"missing": t["missing"], "present": t["observed"], "p_value": t["p_value"]},
+                              f"{t['kind'].replace('_', ' ')} in rows where '{c}' is missing vs present; "
+                              f"permutation test ({t['n_permutations']} permutations)", columns=[c, p.target.name]))
+        f = out.finding(f"structural_missing.{c}", Severity.WARN, Trigger.FIRED,
+                        f"'{c}' is missing exactly where {where} ({k} rows): the value is probably not unknown but "
+                        "does not exist there yet.", evs, [c, sv["column"]])
+        contextual(out, ctx, qid=f"missing_is_zero.{c}",
+                   question=f"'{c}' is missing exactly where {where}. Does missing mean 0 there (the value does not "
+                            "exist yet, rather than being unknown)?",
+                   options=[("zero", "Yes: missing means 0 here", "fill with 0; no missing indicator", {"flag": True}),
+                            ("unknown", "No: the value exists but was not recorded",
+                             "median imputation + missing indicator (the default)", {"flag": False})],
+                   keyword="missing_is_zero", column=c, confirm="zero", decision_id=f"fill_zero.{c}",
+                   title=f"Fill missing '{c}' with 0", stage="preprocessing",
+                   action=f"Impute '{c}' with the constant 0 (inside the Pipeline), without a missing indicator.",
+                   rationale=f"Every missing value of '{c}' sits where {where}, and almost every such row is "
+                             "missing: a structural gap. Median imputation would invent a typical value for rows "
+                             "where the quantity cannot exist yet.",
+                   risk="If the value exists and was simply not recorded, 0 is wrong; median + indicator is safer.",
+                   finding_ids=[f], evidence_ids=evs,
+                   step=Step(kind="fill_constant", params={"columns": [c], "value": 0}),
+                   why=f"'{c}' is missing in exactly the {k} row(s) where {where}"
+                       + (f"; {_miss_target_text(c, t)}" if t else "") + ".",
+                   do=f"Answer whether missing '{c}' means 0.",
+                   alternatives=["Median + missing indicator (the default) — right when the value exists but was "
+                                 "not recorded.",
+                                 f"Drop these rows — right when rows with {where} will not be scored in production.",
+                                 "Another constant (e.g. the first bill) — right when domain knowledge says what the "
+                                 "value is; put it in your own Pipeline."])
+
+
+@rule("informative_missingness", "1", thresholds={"p_value_holm": 0.05, "share_points": 0.05, "target_sd": 0.1},
+      description="Missingness relates to the target (permutation test, Holm across columns).")
+def informative_missingness(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    from ..verify import holm
+
+    tested = [(c, cp.missingness["target"]) for c, cp in p.columns.items() if cp.missingness.get("target")]
+    if not tested:
+        return
+    adj = holm([float(t["p_value"]) for _, t in tested])
+    hits = [(c, t, a) for (c, t), a in zip(tested, adj) if a < 0.05 and _miss_effect(t) >=
+            (0.05 if t["kind"] == "class_share" else 0.1)]
+    structural = {c for c, cp in p.columns.items()
+                  if cp.missingness.get("structural") and cp.kind is ColumnKind.NUMERIC}
+    for c, t, a in sorted(hits, key=lambda h: h[2])[:5]:
+        if c in structural:
+            continue  # the structural question already carries this evidence
+        cp = p.columns[c]
+        e = out.ev(f"col.{c}.missing_target", f"Target where missing vs present · {c}",
+                   {"missing": t["missing"], "present": t["observed"], "p_value": t["p_value"], "p_holm": st_r(a)},
+                   f"{t['kind'].replace('_', ' ')} in rows where '{c}' is missing vs present; permutation test "
+                   f"({t['n_permutations']} permutations), Holm-adjusted across {len(tested)} column(s)",
+                   columns=[c, p.target.name])
+        evs = [e]
+        if cp.missingness.get("indicator_score") is not None:
+            evs.append(out.ev(f"col.{c}.missing_indicator", f"Single-feature score of the missing indicator · {c}",
+                              cp.missingness["indicator_score"], p.relations.association_method, columns=[c]))
+        feat = cp.missingness.get("features")
+        if feat and feat["strength"] >= 0.2:
+            evs.append(out.ev(f"col.{c}.missing_by_feature", f"Feature that best separates missing rows · {c}",
+                              {"feature": feat["column"], "value": feat["value"]}, feat["measure"],
+                              columns=[c, feat["column"]]))
+        f = out.finding(f"informative_missing.{c}", Severity.WARN, Trigger.FIRED,
+                        f"Missingness of '{c}' relates to the target: {_miss_target_text(c, t)}.", evs,
+                        [c, p.target.name])
+        out.decision(f"missing_signal.{c}", f"Find out why '{c}' goes missing", DecisionClass.REVIEW, "data_review",
+                     f"Ask how '{c}' goes missing. The exported Pipeline keeps a missing indicator for it, so the "
+                     "model can use the pattern; that is right only if the same pattern exists at prediction time.",
+                     f"Rows where '{c}' is missing have a different target: {_miss_target_text(c, t)}.",
+                     risk="If values go missing because of the outcome (a test ordered after the diagnosis), the "
+                          "indicator is a leak; if the pattern changes in production, the model's use of it breaks.",
+                     finding_ids=[f], evidence_ids=evs,
+                     why=_miss_target_text(c, t)[:1].upper() + _miss_target_text(c, t)[1:] + ".",
+                     do=f"Ask how '{c}' goes missing; record it with report.resolve('d.missing_signal.{c}', note).",
+                     alternatives=["Keep the missing indicator (the default) — right when the same mechanism "
+                                   "produces missing values at prediction time.",
+                                   "Drop the indicator or the column — right when values go missing because of the "
+                                   "outcome: then the pattern is a leak.",
+                                   "Model-based imputation — right when the values exist and other features predict "
+                                   "them; the indicator still carries the pattern."])
+
+
+@rule("model_imputation", "1", thresholds={"missing_fraction": 0.05, "abs_spearman": 0.5},
+      description="Numeric columns with missing values that other features predict: test model-based imputation.")
+def model_imputation(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
+    cols, evs = [], []
+    for c, cp in p.columns.items():
+        mi = cp.missingness
+        pr = mi.get("predictable")
+        if cp.kind is not ColumnKind.NUMERIC or not pr or mi.get("structural"):
+            continue
+        if trigger(cp.missing_fraction, cp.missing_ci, 0.05) is not Trigger.FIRED or pr["abs_spearman"] < 0.5:
+            continue
+        cols.append(c)
+        evs.append(out.ev(f"col.{c}.missing", f"Missing fraction · {c}", cp.missing_fraction, WILSON,
+                          ci=cp.missing_ci, columns=[c]))
+        evs.append(out.ev(f"col.{c}.predictable", f"Strongest rank correlation with another feature · {c}",
+                          {"feature": pr["column"], "abs_spearman": pr["abs_spearman"]},
+                          p.relations.corr_method + " (pairwise complete rows)", columns=[c, pr["column"]]))
+        feat = mi.get("features")
+        if feat and feat["strength"] >= 0.2:
+            evs.append(out.ev(f"col.{c}.missing_by_feature", f"Feature that best separates missing rows · {c}",
+                              {"feature": feat["column"], "value": feat["value"]}, feat["measure"],
+                              columns=[c, feat["column"]]))
+    if not cols:
+        return
+    best = max(p.columns[c].missingness["predictable"]["abs_spearman"] for c in cols)
+    mar = [c for c in cols if (p.columns[c].missingness.get("features") or {}).get("strength", 0) >= 0.2]
+    f = out.finding("model_imputation", Severity.INFO, Trigger.FIRED,
+                    f"{len(cols)} numeric column(s) are >= 5% missing and correlate with other features "
+                    f"(|Spearman| up to {best:.2f})"
+                    + (f"; for {len(mar)} of them, other features also predict which rows are missing" if mar
+                       else "") + ".", evs, cols)
+    out.decision("impute_model", f"Impute {len(cols)} column(s) from the other features", DecisionClass.CONDITIONAL,
+                 "preprocessing",
+                 f"Replace median imputation of the numeric features with IterativeImputer (model-based, inside the "
+                 f"Pipeline, missing indicators kept); columns that drive it: {cols[:8]}"
+                 f"{' ...' if len(cols) > 8 else ''}.",
+                 "Median imputation puts every missing row at the centre; when other features predict the value, a "
+                 "model-based imputer uses them. Whether that helps your model is an empirical question."
+                 + (" Missingness also depends on other features here (missing at random given them), which biases "
+                    "the median." if mar else ""),
+                 risk="Model-based imputation is slower and can carry noise from weak predictors; tree ensembles "
+                      "often do as well with median + indicator.",
+                 verify_hint="Compare CV scores with median vs. model-based imputation for your estimator.",
+                 finding_ids=[f], evidence_ids=evs, trig=Trigger.FIRED,
+                 step=Step(kind="iterative_impute", params={"columns": cols}),
+                 why=f"{len(cols)} column(s) are >= 5% missing and other features predict them (|Spearman| up to "
+                     f"{best:.2f}); median imputation ignores that.",
+                 do="Test model-based imputation with your estimator (report.verify).",
+                 alternatives=["Median + missing indicator (the default) — right when values are missing at random "
+                               "or the model is a tree ensemble that uses the indicator well.",
+                               "No imputation — right when your estimator handles NaN itself (HistGradientBoosting): "
+                               "it learns which side of each split missing rows go to; use your own Pipeline.",
+                               "A constant — right when missingness is structural (a value that does not exist "
+                               "yet)."])
+
+
+def st_r(x: float) -> float:
+    return round(float(x), 4)
 
 
 @rule("near_constant", "1", thresholds={"dominant_fraction": 0.99})
@@ -457,22 +632,34 @@ def constant_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": cols}))
 
 
-@rule("unsupported_columns", "2")
+@rule("unsupported_columns", "3")
 def unsupported_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     cols = [c for c, cp in p.columns.items()
             if cp.kind in (ColumnKind.DATETIME, ColumnKind.TEXT)
             or (cp.kind is ColumnKind.ID_LIKE and not cp.dtype.startswith(("int", "uint", "Int", "UInt")))]
     if not cols:
         return
-    kinds = {c: p.columns[c].kind.value for c in cols}
+    # a string id with its own value on every row identifies the row: nothing to derive, no entity to group
+    row_ids = [c for c in cols if p.columns[c].kind is ColumnKind.ID_LIKE and p.columns[c].unique_ratio >= 1.0
+               and p.columns[c].missing_fraction == 0]
+    rest = [c for c in cols if c not in row_ids]
+    if row_ids:
+        e = out.ev("columns.row_ids", "Row identifiers (one value per row)", row_ids,
+                   "string columns whose every value is distinct and present", columns=row_ids)
+        out.finding("row_identifiers", Severity.INFO, Trigger.FIRED,
+                    f"{row_ids} identify rows (a distinct value on every row) and are left out of the features; "
+                    "with no repeated values there is nothing to derive and no entity to group by.", [e], row_ids)
+    if not rest:
+        return
+    kinds = {c: p.columns[c].kind.value for c in rest}
     e = out.ev("columns.unsupported", "Columns not usable raw in v1", kinds,
-               "column-kind inference (datetime, free text, string identifiers)", columns=cols)
+               "column-kind inference (datetime, free text, string identifiers)", columns=rest)
     f = out.finding("unsupported_columns", Severity.WARN, Trigger.FIRED,
-                    f"{len(cols)} column(s) are not supported raw by the v1 tabular pipeline: {kinds}. "
-                    "They may carry strong signal.", [e], cols)
-    out.decision("unsupported_columns", f"Engineer features from {len(cols)} datetime/text/id column(s)",
+                    f"{len(rest)} column(s) are not supported raw by the v1 tabular pipeline: {kinds}. "
+                    "They may carry strong signal.", [e], rest)
+    out.decision("unsupported_columns", f"Engineer features from {len(rest)} datetime/text/id column(s)",
                  DecisionClass.REVIEW, "columns",
-                 f"{cols} are not in the exported feature matrix because v1 has no encoder for raw datetimes, "
+                 f"{rest} are not in the exported feature matrix because v1 has no encoder for raw datetimes, "
                  "free text or string identifiers. If they matter, derive features yourself (date parts, elapsed "
                  "time, text vectors, entity statistics) and re-run.",
                  "Unsupported in v1 is a capability limit of prefit, not a judgement that these columns are "
@@ -482,7 +669,7 @@ def unsupported_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  finding_ids=[f], evidence_ids=[e])
 
 
-@rule("id_like_columns", "1", thresholds={"unique_ratio": 0.95})
+@rule("id_like_columns", "2", thresholds={"unique_ratio": 0.95})
 def id_like_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     for c, cp in p.columns.items():
         if cp.kind is not ColumnKind.ID_LIKE or not cp.dtype.startswith(("int", "uint", "Int", "UInt")):
@@ -493,16 +680,16 @@ def id_like_columns(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                         f"'{c}' looks like an identifier ({cp.kind_reason}). This is a review item, not a leakage verdict.",
                         [e], [c])
         contextual(out, ctx, qid=f"id_like.{c}", question=f"Is '{c}' an identifier rather than a measurement?",
-                   options=[("identifier", "Yes, an identifier", "drop it from the features"),
-                            ("feature", "No, a real feature", "keep it")],
-                   confirm="identifier", decision_id=f"drop_id.{c}", title=f"Drop identifier '{c}'",
+                   options=[("identifier", "Yes, an identifier", "drop it from the features", {"flag": True}),
+                            ("feature", "No, a real feature", "keep it", {"flag": False})],
+                   keyword="identifier", column=c, confirm="identifier", decision_id=f"drop_id.{c}", title=f"Drop identifier '{c}'",
                    stage="columns", action=f"Exclude '{c}' from the features.",
                    rationale="Row identifiers let models memorize rows; their order can also encode time or the target.",
                    risk="If it identifies an entity with repeated rows, pass it as groups= rather than just dropping it.",
                    finding_ids=[f], evidence_ids=[e], step=Step(kind="drop_columns", params={"columns": [c]}), why=f"'{c}' is near-unique ({cp.unique_ratio:.0%} distinct) and looks like an identifier.", do=f"Answer whether '{c}' is an identifier.")
 
 
-@rule("leakage_hint", "2", thresholds={"association": 0.95, "uncertain_association": 0.90, "abs_pearson": 0.98})
+@rule("leakage_hint", "3", thresholds={"association": 0.95, "uncertain_association": 0.90, "abs_pearson": 0.98})
 def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     for c, cp in p.columns.items():
         a = cp.association
@@ -530,9 +717,10 @@ def leakage_hint(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                         "power is not proof of leakage; genuinely strong features look the same.", evs, [c])
         contextual(out, ctx, qid=f"leakage.{c}",
                    question=f"Is '{c}' known at prediction time, before the target is observed?",
-                   options=[("no", "No, it is only known afterwards", "drop it from the features"),
-                            ("yes", "Yes, it is available in production", "keep it; the signal is genuine")],
-                   confirm="no", decision_id=f"drop_leak.{c}", title=f"Drop '{c}' (possible leak)",
+                   options=[("no", "No, it is only known afterwards", "drop it from the features", {"flag": False}),
+                            ("yes", "Yes, it is available in production", "keep it; the signal is genuine",
+                             {"flag": True})],
+                   keyword="known_at_prediction", column=c, confirm="no", decision_id=f"drop_leak.{c}", title=f"Drop '{c}' (possible leak)",
                    stage="columns", action=f"Exclude '{c}' from the features.",
                    rationale="A feature that is a consequence or copy of the target makes every metric meaningless.",
                    risk="Some features are legitimately this strong; dropping one throws away real signal.",
@@ -570,7 +758,7 @@ def fit_in_fold(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  do="Keep imputation and encoding inside the exported Pipeline.", standard=True)
 
 
-@rule("skewed_features", "3", thresholds={"abs_skew": 2.0})
+@rule("skewed_features", "4", thresholds={"abs_skew": 2.0})
 def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     cols, trig_any = [], []
     for c, cp in p.columns.items():
@@ -598,6 +786,12 @@ def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  verify_hint="Compare CV scores with and without the transform for your model family.",
                  finding_ids=[f], evidence_ids=evs, trig=trig,
                  step=Step(kind="power_transform", params={"columns": cols}),
+                 alternatives=["Leave the features as they are — right for tree ensembles, which split on ranks and "
+                               "barely notice monotone transforms; the experiment shows whether yours does.",
+                               "log(1 + x) by hand — right when the feature is a positive amount and you want the "
+                               "coefficient to read as a relative effect.",
+                               "Clip or winsorize the tail — right when the skew comes from a few recording errors, "
+                               "not from the quantity itself."],
                  why=(f"{n_fired} feature(s) have |skew| >= 2 across their whole interval"
                       + ((f", and {n_near} more " + ("has an interval that straddles 2" if n_near == 1
                                                       else "have intervals that straddle 2")) if n_near else "")
@@ -605,7 +799,7 @@ def skewed_features(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  do="Test a Yeo-Johnson transform with your estimator (report.verify).")
 
 
-@rule("high_cardinality", "1", thresholds={"cardinality": 50})
+@rule("high_cardinality", "2", thresholds={"cardinality": 50})
 def high_cardinality(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     cols = [c for c, cp in p.columns.items() if cp.kind is ColumnKind.CATEGORICAL and cp.cardinality > 50]
     if not cols:
@@ -622,14 +816,20 @@ def high_cardinality(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  finding_ids=[f], evidence_ids=evs, trig=Trigger.FIRED,
                  why=f"{len(cols)} categorical column(s) have more than 50 categories.",
                  do="Test target encoding against one-hot with your estimator (report.verify).",
-                 step=Step(kind="target_encode", params={"columns": cols}))
+                 step=Step(kind="target_encode", params={"columns": cols}),
+                 alternatives=["One-hot with rare categories grouped (the default) — right when a few categories "
+                               "carry most rows, or the model is linear and categories are few after grouping.",
+                               "Native categorical support (HistGradientBoosting categorical_features) — right for "
+                               "gradient boosting with up to a few hundred categories.",
+                               "Treat the column as an identifier or a group (groups=) — right when each category is "
+                               "an entity with repeated rows, not a property."])
 
 
 # --------------------------------------------------------------------------- #
 # Target
 # --------------------------------------------------------------------------- #
 
-@rule("class_imbalance", "1", thresholds={"imbalance_ratio": 3.0, "critical_ratio": 10.0}, tasks=(CLS,))
+@rule("class_imbalance", "2", thresholds={"imbalance_ratio": 3.0, "critical_ratio": 10.0}, tasks=(CLS,))
 def class_imbalance(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     s = p.target.stats
     ratio = s.get("imbalance_ratio")
@@ -657,10 +857,15 @@ def class_imbalance(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                  finding_ids=[f], evidence_ids=[e1, e2], trig=t, status=status, note=note,
                  why=f"Classes are {ratio:.1f}:1; re-weighting may raise minority recall at the cost of precision.",
                  do="Test class_weight='balanced' with your estimator (report.verify).",
-                 step=Step(kind="class_weight", params={"value": "balanced"}))
+                 step=Step(kind="class_weight", params={"value": "balanced"}),
+                 alternatives=["No re-weighting, threshold chosen on validation scores — right when you need "
+                               "calibrated probabilities or rank by score (ROC-AUC / PR-AUC do not change with "
+                               "weights).",
+                               "Resampling (under/over-sampling inside the folds) — right when the estimator has no "
+                               "class_weight; it has the same calibration cost."])
 
 
-@rule("target_skew", "1", thresholds={"abs_skew": 1.0, "outlier_fraction": 0.05}, tasks=(REG,))
+@rule("target_skew", "2", thresholds={"abs_skew": 1.0, "outlier_fraction": 0.05}, tasks=(REG,))
 def target_skew(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
     s, ci = p.target.stats, p.target.ci
     skew = s.get("skew")
@@ -695,6 +900,10 @@ def target_skew(p: DataProfile, ctx: RuleContext, out: Emitter) -> None:
                       "while MAE improves.",
                  verify_hint="Compare MAE and RMSE with and without the transform.",
                  finding_ids=[f], evidence_ids=[e1, e2], trig=t, step=Step(kind="log_target"),
+                 alternatives=["Model the raw target — right when the metric is RMSE or the mean matters (sums, "
+                               "budgets): the log scale predicts something closer to the median.",
+                               "A loss that matches the target (Poisson / Tweedie, quantile) — right for counts, "
+                               "amounts with many zeros, or when one quantile is the goal."],
                  why=f"The target is skewed (skew {skew:.2f}, {s.get('outlier_fraction', 0):.1%} IQR-outliers) and "
                      "non-negative.",
                  do="Test log(1 + y) with your estimator (report.verify).")

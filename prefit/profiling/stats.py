@@ -25,41 +25,50 @@ def r(x: Any, nd: int = 6) -> Any:
     return x
 
 
-def iqr_outlier_fraction(v: np.ndarray) -> float:
-    q1, q3 = np.quantile(v, [0.25, 0.75])
+def iqr_outlier_fraction(v: np.ndarray) -> Any:
+    """Share of values beyond 1.5 IQR from the quartiles (row-wise for a 2-D array)."""
+    q1, q3 = np.quantile(v, [0.25, 0.75], axis=-1, keepdims=True)
     iqr = q3 - q1
-    if iqr == 0:
-        return 0.0
-    return float(((v < q1 - 1.5 * iqr) | (v > q3 + 1.5 * iqr)).mean())
+    out = ((v < q1 - 1.5 * iqr) | (v > q3 + 1.5 * iqr)).mean(-1)
+    out = np.where(iqr[..., 0] == 0, 0.0, out)
+    return float(out) if np.ndim(out) == 0 else out
 
 
-def skewness(v: np.ndarray) -> float:
-    """Adjusted Fisher-Pearson skewness (same estimator as pandas .skew())."""
-    n = len(v)
+def skewness(v: np.ndarray) -> Any:
+    """Adjusted Fisher-Pearson skewness (same estimator as pandas .skew()).
+    A 2-D array gives one value per row (used by the vectorized bootstrap)."""
+    n = v.shape[-1]
     if n < 3:
-        return float("nan")
-    d = v - v.mean()
-    m2 = float((d ** 2).mean())
-    if m2 == 0:
-        return 0.0
-    g1 = float((d ** 3).mean()) / m2 ** 1.5
-    return g1 * np.sqrt(n * (n - 1)) / (n - 2)
+        return float("nan") if v.ndim == 1 else np.full(v.shape[0], np.nan)
+    d = v - v.mean(-1, keepdims=True)
+    d2 = d * d
+    m2 = d2.mean(-1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        g1 = (d2 * d).mean(-1) / m2 ** 1.5
+    out = np.where(m2 == 0, 0.0, g1 * np.sqrt(n * (n - 1)) / (n - 2))
+    return float(out) if v.ndim == 1 else out
 
 
-def excess_kurtosis(v: np.ndarray) -> float:
-    """Bias-corrected excess kurtosis (same estimator as pandas .kurt()); 0 == normal."""
-    n = len(v)
+def excess_kurtosis(v: np.ndarray) -> Any:
+    """Bias-corrected excess kurtosis (same estimator as pandas .kurt()); 0 == normal.
+    A 2-D array gives one value per row."""
+    n = v.shape[-1]
     if n < 4:
-        return float("nan")
-    d = v - v.mean()
-    m2 = float((d ** 2).mean())
-    if m2 == 0:
-        return 0.0
-    g2 = float((d ** 4).mean()) / m2 ** 2 - 3
-    return ((n + 1) * g2 + 6) * (n - 1) / ((n - 2) * (n - 3))
+        return float("nan") if v.ndim == 1 else np.full(v.shape[0], np.nan)
+    d = v - v.mean(-1, keepdims=True)
+    d2 = d * d
+    m2 = d2.mean(-1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        g2 = (d2 * d2).mean(-1) / m2 ** 2 - 3
+    out = np.where(m2 == 0, 0.0, ((n + 1) * g2 + 6) * (n - 1) / ((n - 2) * (n - 3)))
+    return float(out) if v.ndim == 1 else out
 
 
-def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+# statistics that accept a 2-D array of resamples (one per row)
+VECTORIZED = {skewness, excess_kurtosis, iqr_outlier_fraction}
+
+
+def wilson_ci(k: int, n: int, z: float = 1.959963984540054) -> tuple[float, float] | None:
     """Wilson score interval for a proportion k/n."""
     if n == 0:
         return None
@@ -152,8 +161,15 @@ def bootstrap_ci(
     rng = np.random.default_rng(seed)
     m = min(n, max_rows)
     stats = np.empty(n_boot)
-    for i in range(n_boot):
-        stats[i] = fn(v[rng.integers(0, n, size=m)])
+    if fn in VECTORIZED:
+        # resamples in blocks of rows; one draw of shape (b, m) is the same random stream as b draws of m
+        block = max(1, 2_000_000 // m)
+        for i in range(0, n_boot, block):
+            b = min(block, n_boot - i)
+            stats[i:i + b] = fn(v[rng.integers(0, n, size=(b, m))])
+    else:
+        for i in range(n_boot):
+            stats[i] = fn(v[rng.integers(0, n, size=m)])
     stats = stats[np.isfinite(stats)]
     if len(stats) < n_boot // 2:
         return None
@@ -201,16 +217,35 @@ def _numeric_predict(x_fit: np.ndarray, y_fit: np.ndarray, x_ev: np.ndarray) -> 
 def _lookup_predict(c_fit: np.ndarray, y_fit: np.ndarray, c_ev: np.ndarray) -> np.ndarray:
     """Category -> mean target (one-hot mean for classification); rare/unseen -> overall mean."""
     default = y_fit.mean(0)
-    df = pd.DataFrame(y_fit).assign(_c=c_fit)
-    g = df.groupby("_c")
-    means, sizes = g.mean(), g.size()
-    table = {c: means.loc[c].to_numpy() for c in sizes.index[sizes >= 5]}
-    return np.array([table.get(c, default) for c in c_ev], dtype=float).reshape(len(c_ev), -1)
+    k = int(max(c_fit.max(initial=-1), c_ev.max(initial=-1))) + 1
+    sizes = np.bincount(c_fit, minlength=k)
+    sums = np.zeros((k, y_fit.shape[1]))
+    np.add.at(sums, c_fit, y_fit)
+    table = np.tile(default, (k, 1)).astype(float)
+    ok = sizes >= 5
+    table[ok] = sums[ok] / sizes[ok, None]
+    return table[c_ev]
+
+
+def _auc(pos: np.ndarray, score: np.ndarray) -> float:
+    """ROC AUC from average ranks (Mann-Whitney U); ties count one half."""
+    ranks = pd.Series(score).rank().to_numpy()
+    n1 = int(pos.sum())
+    n0 = len(pos) - n1
+    return float((ranks[pos].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
 
 
 def single_feature_score(
-    x: pd.Series, y: pd.Series, numeric: bool, classification: bool, seed: int,
+    x: pd.Series, y: pd.Series, numeric: bool, classification: bool, seed: int, max_rows: int | None = None,
 ) -> float | None:
+    """The leakage-screen score of `single_feature_scores` (see there)."""
+    out = single_feature_scores(x, y, numeric, classification, seed, max_rows)
+    return None if out is None else out[0]
+
+
+def single_feature_scores(
+    x: pd.Series, y: pd.Series, numeric: bool, classification: bool, seed: int, max_rows: int | None = None,
+) -> tuple[float, float] | None:
     """How well this one feature alone predicts the target: a 2-fold
     cross-validated single-feature score on the development rows.
 
@@ -219,9 +254,16 @@ def single_feature_score(
     scored on the other half, then the halves swap; the two scores are averaged.
       regression      R^2
       classification  balanced accuracy rescaled so chance = 0 and perfect = 1
+    (`single_feature_scores` also returns the threshold-free signal measure.)
+    Returns (score, signal). `score` drives the leakage hint. `signal` is the
+    threshold-free strength used to rank features: the same as `score` for
+    regression, Gini = 2 AUC - 1 of the predicted class shares (one-vs-rest,
+    averaged) for classification, so a strong feature on an imbalanced target
+    shows up even when it never flips the majority class (Telco: Contract).
     Scoring on rows the predictor did not see stops identifiers and
     high-cardinality columns from scoring well by memorization alone. This is a
-    split of the development rows; it never touches the holdout.
+    split of the development rows; it never touches the holdout. Above
+    `max_rows` rows, a seeded sample of that size is used.
     """
     mask = y.notna().to_numpy()
     yt = y.to_numpy()[mask]
@@ -239,13 +281,16 @@ def single_feature_score(
         ymat = yf[:, None]
     rng = np.random.default_rng(seed)
     perm = rng.permutation(n)
+    if max_rows is not None and n > max_rows:
+        perm, n = perm[:max_rows], max_rows
     halves = (perm[: n // 2], perm[n // 2:])
     if numeric:
         xv = pd.to_numeric(x, errors="coerce").astype(float).to_numpy()[mask]
     else:
         codes, _ = pd.factorize(x.astype(str).where(x.notna(), "__nan__"))
         codes = codes[mask]
-    scores = []
+    scores: list[float] = []
+    ginis: list[float] = []
     # 2-fold cross-validation: fit on one half, score the other, then swap
     for fit, ev in (halves, halves[::-1]):
         if numeric:
@@ -253,15 +298,19 @@ def single_feature_score(
         else:
             pred = _lookup_predict(codes[fit], ymat[fit], codes[ev])
         if classification:
-            p = pred.argmax(1)
             true = yi[ev]
+            p = pred.argmax(1)
             recalls = [float((p[true == j] == j).mean()) for j in range(k) if (true == j).any()]
             bacc = float(np.mean(recalls))
             scores.append(max(0.0, (bacc - 1 / k) / (1 - 1 / k)))
+            cols = [1] if k == 2 else range(k)
+            aucs = [_auc(true == j, pred[:, j]) for j in cols if 0 < (true == j).sum() < len(true)]
+            ginis.append(max(0.0, 2 * float(np.mean(aucs)) - 1) if aucs else 0.0)
         else:
             true_r = yf[ev]
             ss_tot = float(((true_r - true_r.mean()) ** 2).sum())
             if ss_tot == 0:
                 return None
             scores.append(max(0.0, 1 - float(((true_r - pred[:, 0]) ** 2).sum()) / ss_tot))
-    return r(float(np.mean(scores)), 4)
+            ginis.append(scores[-1])
+    return r(float(np.mean(scores)), 4), r(float(np.mean(ginis)), 4)

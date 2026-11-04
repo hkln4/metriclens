@@ -45,7 +45,7 @@ def build_payload(report: Any, cfg: LLMConfig) -> tuple[dict[str, Any], dict[str
             return {col_alias.get(k, "…"): val(x) for k, x in v.items()}
         return "(text withheld)"
 
-    unconfirmed = bool(p.task_inferred) and report.details.context.answers.get("q.task") is None
+    unconfirmed = p.task_needs_answer and report.details.context.answers.get("q.task") is None
 
     def dep(x: Any) -> dict[str, Any]:
         return {"task_dependent": True} if unconfirmed and x.task_dependent else {}

@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT / "benchmarks"))
 from fixtures import CASES, MANIFEST_VERSION  # noqa: E402
 
 import prefit as pf  # noqa: E402
+from prefit.rules.engine import rule_versions  # noqa: E402
 
 
 def run_case(case) -> dict:
@@ -95,7 +96,7 @@ def main() -> int:
             s["passed"] += int(c["ok"])
     payload = {
         "manifest_version": MANIFEST_VERSION, "prefit_version": pf.__version__,
-        "python": platform.python_version(),
+        "python": platform.python_version(), "rule_versions": rule_versions(),
         "protocol": ("Each case runs pf.analyze with default options (plus the case's kwargs) and seed 0. A check "
                      "passes when the rule's finding matches the expectation: fired / none / uncertain (near "
                      "threshold). Split checks (holdout_split, cv_split) count exact row hashes found on both "

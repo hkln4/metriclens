@@ -109,6 +109,62 @@ def next_step(report: Any) -> str:
     return "Export the model recipe with report.export(estimator) and evaluate it once on the held-out data."
 
 
+STATE_LABEL = {"done": "done", "needs_you": "needs you", "tested": "tested"}
+STATE_ICON = {"done": "✓", "needs_you": "!", "tested": "⚗"}
+
+
+def states(report: Any) -> dict[str, list[Any]]:
+    """Decisions grouped by the three states the user sees (standard practice counts as done)."""
+    out: dict[str, list[Any]] = {"needs_you": [], "tested": [], "done": []}
+    for d in report.decisions:
+        out[d.state].append(d)
+    return out
+
+
+def state_line(report: Any) -> str:
+    g = states(report)
+    return " · ".join(f"{STATE_ICON[k]} {len(v)} {STATE_LABEL[k]}" for k, v in g.items())
+
+
+def _literal(v: Any) -> str:
+    return repr(v) if not isinstance(v, str) else '"' + v.replace('"', '\\"') + '"'
+
+
+def answer_line(q: Any) -> str:
+    """The full line that answers question q, its first option filled in, the others in a comment."""
+    def short(o: Any) -> str:
+        return o.aliases[0] if o.aliases else o.value
+
+    first = q.options[0]
+    kw = q.keyword or q.id[2:]
+    if q.column is not None and first.flag is not None:
+        call = f"report = report.answer({kw}={{{_literal(q.column)}: {first.flag}}})"
+        alts = " | ".join(f"{o.flag}: {o.label}" for o in q.options)
+    else:
+        call = f"report = report.answer({kw}={_literal(short(first))})"
+        alts = "or " + ", ".join(_literal(short(o)) for o in q.options[1:])
+    return f"{call}  # {alts}"
+
+
+def next_lines(report: Any) -> list[str]:
+    """One runnable line per open item, then the remaining steps of the flow."""
+    has_data = getattr(report, "_data", None) is not None
+    df_arg = "" if has_data else "df"
+    lines = [answer_line(q) for q in report.pending_questions()]
+    for d in report.decisions:
+        if d.cls is DecisionClass.REVIEW and d.status is DecisionStatus.NEEDS_REVIEW:
+            lines.append(f'report = report.resolve("{d.id}", "what you found and decided")  # {d.title}')
+    if any(d.cls is DecisionClass.CONDITIONAL and d.status in UNTESTED for d in report.decisions):
+        lines.append(f"report = report.verify({df_arg})  # test the conditional decisions with your model")
+    est = "" if getattr(report, "_estimator", None) is not None else "estimator"
+    lines.append(f"fitted = report.export({est}).fit({df_arg})  # the recipe: applied, confirmed and verified steps")
+    if report.details.profile.holdout.get("used"):
+        lines.append("review = report.review(fitted)  # once, on the internal holdout")
+    else:
+        lines.append("review = report.review(fitted, test_df)  # once, on your untouched test data")
+    return lines
+
+
 def key_evidence(report: Any, d: Any) -> str:
     """The decisive measurement behind a decision, as 'label = value [ci]'."""
     for eid in d.evidence_ids:
@@ -144,7 +200,7 @@ def experiment_summary(report: Any, d: Any) -> str:
 
 
 def task_unconfirmed(report: Any) -> bool:
-    return bool(report.details.profile.task_inferred) and report.details.context.answers.get("q.task") is None
+    return report.details.profile.task_needs_answer and report.details.context.answers.get("q.task") is None
 
 
 def task_dependence_note(report: Any, d: Any) -> str:
@@ -179,8 +235,11 @@ def partition_note(report: Any) -> str:
 
 
 def task_note(report: Any) -> str:
-    if not report.details.profile.task_inferred:
+    p = report.details.profile
+    if not p.task_inferred:
         return ""
+    if not p.task_needs_answer:
+        return f" (from the target: {p.target.task_evidence.get('reason', 'inferred')})"
     return " (inferred, confirmed)" if report.details.context.answers.get("q.task") else " (inferred)"
 
 
@@ -192,6 +251,6 @@ def headline(report: Any) -> str:
             f"{c['questions']} question(s) open, {c['critical_or_review']} critical/review decision(s).")
 
 
-__all__ = ["effect", "task_unconfirmed", "task_dependence_note", "partition_note", "fmt", "fmt_ci", "tone", "ICON", "SEV_TONE", "CLASS_LABEL", "CLASS_HELP",
+__all__ = ["states", "state_line", "answer_line", "next_lines", "STATE_LABEL", "STATE_ICON", "effect", "task_unconfirmed", "task_dependence_note", "partition_note", "fmt", "fmt_ci", "tone", "ICON", "SEV_TONE", "CLASS_LABEL", "CLASS_HELP",
            "summary_counts", "attention", "next_step", "key_evidence", "experiment_summary", "headline",
            "status_word"]

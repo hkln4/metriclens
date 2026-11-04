@@ -39,6 +39,14 @@ _REG = {
                        "neg_mean_absolute_percentage_error", "Errors relative to the true value matter"),
 }
 
+# short answers accepted by report.answer(metric=...), per option
+ALIASES = {
+    "miss_costly": ("recall",), "false_alarm_costly": ("precision",), "symmetric": ("balanced_accuracy", "f1"),
+    "ranking": ("roc_auc", "auc"), "accuracy_ok": ("accuracy",),
+    "large_errors_costly": ("rmse", "mse"), "typical_error": ("mae",), "relative_error": ("mape",),
+}
+_MULTI_ALIASES = {"symmetric": ("f1_macro", "macro_f1", "balanced_accuracy")}
+
 LABELS = {
     "recall": "recall (positive class)", "precision": "precision (positive class)",
     "average_precision": "PR-AUC / average precision", "balanced_accuracy": "balanced accuracy",
@@ -121,7 +129,9 @@ def metric_policy(p: DataProfile, ctx: RuleContext, out: Emitter, finding_ids: s
                       avoid=avoid, notes=notes, dev_metric=dev, dev_metric_provisional=provisional,
                       positive_label=positive_label)
 
-    options = [(k, v[3], "primary: " + ", ".join(label(m) for m in v[0])) for k, v in table.items()]
+    aliases = {**ALIASES, **(_MULTI_ALIASES if table is _MULTI else {})}
+    options = [(k, v[3], "primary: " + ", ".join(label(m) for m in v[0]), {"aliases": aliases.get(k, ())})
+               for k, v in table.items()]
     d = out.decision("metric", "Choose the metric from the cost of errors", DecisionClass.CONTEXTUAL, "metrics",
                      "Optimize and report: " + ", ".join(label(m) for m in plan.primary)
                      + (f"; report alongside: {', '.join(label(m) for m in plan.report_alongside)}"
@@ -136,5 +146,5 @@ def metric_policy(p: DataProfile, ctx: RuleContext, out: Emitter, finding_ids: s
                      risk="Optimizing a metric that does not match the real cost produces a model that looks good and "
                           "fails where it matters.")
     out.question("metric_priority", "Which kind of error matters most in your application?", options,
-                 decision_ids=[d.id], answer=answer)
+                 decision_ids=[d.id], answer=answer, keyword="metric")
     return plan

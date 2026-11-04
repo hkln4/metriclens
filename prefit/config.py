@@ -22,6 +22,10 @@ class Budget(BaseModel):
     min_relative_effect: float = Field(
         0.01, ge=0, description="Smallest improvement that counts, as a fraction of |baseline score| "
                                 "(e.g. 0.01 = 1%). Smaller significant differences are reported as negligible.")
+    n_jobs: int | None = Field(
+        None, description="Parallel fold fits (joblib). None = automatic: serial, switching to all cores once one "
+                          "cross-validation takes longer than 2 s; 1 = always serial; -1 = always all cores. Folds "
+                          "and seeds are fixed, so results do not depend on it.")
     min_effect: float | None = Field(
         None, ge=0, description="Absolute practical threshold in metric units; overrides min_relative_effect.")
 
@@ -33,6 +37,9 @@ class ProfileOptions(BaseModel):
     n_bootstrap: int = Field(200, ge=0, description="Bootstrap resamples for threshold-relevant statistics.")
     bootstrap_rows: int = Field(5_000, ge=100, description="Rows per bootstrap resample (subsampled above this).")
     max_corr_features: int = Field(20, ge=2, description="Numeric features shown in the correlation matrix.")
+    association_rows: int = Field(
+        50_000, ge=1_000, description="Rows used (seeded sample above this) for the single-feature scores, the "
+                                      "missingness screens and the rank correlations.")
     redact_values: bool = Field(
         False, description="Hide category labels everywhere (figures, report). Counts are kept.")
     max_labelled_cardinality: int = Field(

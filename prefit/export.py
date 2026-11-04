@@ -46,6 +46,29 @@ def _to_str(X: Any) -> np.ndarray:
     return df.astype(object).where(df.notna(), "__missing__").astype(str).to_numpy(dtype=object)
 
 
+class _PerColumnFill:
+    """Fill NaN with one constant per column (module-level, so pipelines pickle)."""
+
+    def __init__(self, values: list[Any]) -> None:
+        self.values = values
+
+    def fit(self, X: Any, y: Any = None) -> _PerColumnFill:
+        return self
+
+    def transform(self, X: Any) -> np.ndarray:
+        v = np.array(X, dtype=float, copy=True)
+        for j, val in enumerate(self.values):
+            v[np.isnan(v[:, j]), j] = float(val)
+        return v
+
+    def get_params(self, deep: bool = True) -> dict[str, Any]:
+        return {"values": self.values}
+
+    def set_params(self, **params: Any) -> _PerColumnFill:
+        self.values = params.get("values", self.values)
+        return self
+
+
 ESTIMATOR_STEPS = {"log_target", "class_weight"}
 
 
@@ -74,6 +97,28 @@ class ExportResult:
     assumptions: list[str] = field(default_factory=list)
     reviewed: list[dict[str, str]] = field(default_factory=list)
     scaled: bool = True
+    report: Any = field(default=None, repr=False, compare=False)
+
+    def fit(self, df: Any = None) -> Any:
+        """Fit `model` on the development rows and return it.
+
+        Uses the frame kept by the report (or `df`, the frame passed to analyze;
+        fingerprint-checked), without the internal holdout, with exactly
+        `feature_columns`, rows with a missing target dropped, sorted by time when
+        a time column is set."""
+        if self.model is None:
+            raise ValueError("No model recipe: pass your estimator to analyze(..., estimator=) or "
+                             "report.export(estimator).")
+        if self.report is None:
+            raise ValueError("This recipe has no report attached; fit it yourself: "
+                             "model.fit(dev_df[feature_columns], dev_df[target]).")
+        dev, _ = (self.report.holdout(df) if self.report.details.profile.holdout.get("used")
+                  else (_dev_frame(self.report, df), None))
+        tgt = self.report.target
+        dev = dev[dev[tgt].notna()]
+        if self.sort_by:
+            dev = dev.sort_values(self.sort_by, kind="stable")
+        return self.model.fit(dev[self.feature_columns], dev[tgt])
 
     @property
     def model_kind(self) -> str:
@@ -132,6 +177,12 @@ _EXCLUDED_REASON = {
 }
 
 
+def _dev_frame(report: Any, df: Any) -> Any:
+    from .api import _frame
+
+    return _frame(report, df, "export().fit")
+
+
 # --------------------------------------------------------------------------- #
 # Builders (shared with verify)
 # --------------------------------------------------------------------------- #
@@ -140,6 +191,7 @@ def feature_plan(p: DataProfile, steps: list[Step]) -> dict[str, list[str]]:
     drop: set[str] = set()
     power: set[str] = set()
     te: set[str] = set()
+    fill: dict[str, Any] = {}
     for s in steps:
         if s.kind == "drop_columns":
             drop |= set(s.params.get("columns", []))
@@ -147,6 +199,8 @@ def feature_plan(p: DataProfile, steps: list[Step]) -> dict[str, list[str]]:
             power |= set(s.params.get("columns", []))
         elif s.kind == "target_encode":
             te |= set(s.params.get("columns", []))
+        elif s.kind == "fill_constant":
+            fill.update({c: s.params.get("value", 0) for c in s.params.get("columns", [])})
     num, cat = [], []
     for c, cp in p.columns.items():
         if c in drop:
@@ -158,8 +212,10 @@ def feature_plan(p: DataProfile, steps: list[Step]) -> dict[str, list[str]]:
         elif cp.kind is ColumnKind.CATEGORICAL:
             cat.append(c)
     return {
-        "numeric": [c for c in num if c not in power],
-        "power": [c for c in num if c in power],
+        "numeric": [c for c in num if c not in power and c not in fill],
+        "power": [c for c in num if c in power and c not in fill],
+        "filled": [c for c in num if c in fill],
+        "fill_values": [fill[c] for c in num if c in fill],
         "categorical": [c for c in cat if c not in te],
         "target_encoded": [c for c in cat if c in te],
         "dropped": sorted(drop),
@@ -181,11 +237,17 @@ def build_preprocessor(p: DataProfile, steps: list[Step], scale: bool = True) ->
 
     plan = feature_plan(p, steps)
     missing = set(p.dataset.missing_columns)
+    iterative = any(s.kind == "iterative_impute" for s in steps)
     tx = []
     if plan["numeric"]:
         ind = bool(missing & set(plan["numeric"]))
-        num_steps: list[tuple[str, Any]] = [("to_float", FunctionTransformer(_to_float)),
-                                            ("impute", SimpleImputer(strategy="median", add_indicator=ind))]
+        imputer: Any = SimpleImputer(strategy="median", add_indicator=ind)
+        if iterative:
+            from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+            from sklearn.impute import IterativeImputer
+
+            imputer = IterativeImputer(random_state=0, max_iter=10, skip_complete=True, add_indicator=ind)
+        num_steps: list[tuple[str, Any]] = [("to_float", FunctionTransformer(_to_float)), ("impute", imputer)]
         if scale:
             num_steps.append(("scale", StandardScaler()))
         tx.append(("num", Pipeline(num_steps), plan["numeric"]))
@@ -194,6 +256,14 @@ def build_preprocessor(p: DataProfile, steps: list[Step], scale: bool = True) ->
         tx.append(("power", Pipeline([("to_float", FunctionTransformer(_to_float)),
                                       ("impute", SimpleImputer(strategy="median", add_indicator=ind)),
                                       ("yeo_johnson", PowerTransformer(method="yeo-johnson"))]), plan["power"]))
+    if plan["filled"]:
+        fill_steps: list[tuple[str, Any]] = [("to_float", FunctionTransformer(_to_float))]
+        values = set(map(float, plan["fill_values"]))
+        fill_steps.append(("fill", SimpleImputer(strategy="constant", fill_value=values.pop()) if len(values) == 1
+                           else _PerColumnFill(plan["fill_values"])))
+        if scale:
+            fill_steps.append(("scale", StandardScaler()))
+        tx.append(("filled", Pipeline(fill_steps), plan["filled"]))
     if plan["categorical"]:
         tx.append(("cat", Pipeline([("to_str", FunctionTransformer(_to_str)),
                                     ("onehot", OneHotEncoder(handle_unknown="infrequent_if_exist",
@@ -204,7 +274,7 @@ def build_preprocessor(p: DataProfile, steps: list[Step], scale: bool = True) ->
                                    ("target_encode", TargetEncoder(random_state=0))]), plan["target_encoded"]))
     if not tx:
         raise ValueError("No usable feature columns remain after the applied decisions.")
-    cols = plan["numeric"] + plan["power"] + plan["categorical"] + plan["target_encoded"]
+    cols = plan["numeric"] + plan["power"] + plan["filled"] + plan["categorical"] + plan["target_encoded"]
     return ColumnTransformer(tx, remainder="drop", verbose_feature_names_out=False), cols
 
 
@@ -324,7 +394,7 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
                    if cp.kind in (ColumnKind.DATETIME, ColumnKind.TEXT)
                    or (cp.kind is ColumnKind.ID_LIKE and not cp.dtype.startswith(("int", "uint", "Int", "UInt")))]
     assumptions = []
-    if p.task_inferred and ctx.answers.get("q.task") is None:
+    if p.task_needs_answer and ctx.answers.get("q.task") is None:
         assumptions.append(f"task inferred as {p.task.value} (unconfirmed)")
     if plan.dev_metric_provisional:
         assumptions.append("metric priority unanswered; scoring is a provisional reporting set")
@@ -340,4 +410,4 @@ def export_pipeline(report: Any, estimator: Any = None, include_proxy_supported:
         model=model, preprocessor=preprocessor, cv=build_cv(cv_step), scoring=scoring, feature_columns=cols,
         groups=ctx.groups if ctx.groups not in (None, "<array>") else None,
         sort_by=ctx.time_col, included=included, excluded=excluded, needs_estimator=needs_est,
-        unsupported=unsupported, assumptions=assumptions, reviewed=reviewed, scaled=scale)
+        unsupported=unsupported, assumptions=assumptions, reviewed=reviewed, scaled=scale, report=report)

@@ -110,7 +110,7 @@ class Emitter:
                  verify_hint: str = "", finding_ids: list[str] | tuple[str, ...] = (), evidence_ids: list[str] | tuple[str, ...] = (),
                  step: Step | None = None, question_id: str | None = None,
                  trig: Trigger | None = None, note: str = "", why: str = "", do: str = "",
-                 standard: bool = False) -> Decision:
+                 standard: bool = False, alternatives: list[str] | tuple[str, ...] = ()) -> Decision:
         assert self.rule is not None
         if status is None:
             status = {
@@ -125,22 +125,25 @@ class Emitter:
                      why_short=why or first_sentence(rationale), do_short=do or first_sentence(action),
                      rule_id=self.rule.id, finding_ids=list(finding_ids),
                      evidence_ids=list(evidence_ids), step=step, question_id=question_id,
-                     trigger=trig, note=note, standard=standard)
+                     trigger=trig, note=note, standard=standard, alternatives=list(alternatives))
         self.decisions.append(d)
         return d
 
-    def question(self, id: str, text: str, options: list[tuple[str, str, str]],
-                 decision_ids: list[str] | tuple[str, ...] = (), answer: str | None = None) -> Question:
-        q = Question(id=f"q.{id}", text=text,
-                     options=[Option(value=v, label=lbl, effect=eff) for v, lbl, eff in options],
-                     decision_ids=list(decision_ids), answer=answer)
+    def question(self, id: str, text: str, options: list[tuple],
+                 decision_ids: list[str] | tuple[str, ...] = (), answer: str | None = None,
+                 keyword: str = "", column: str | None = None) -> Question:
+        """`options` are (value, label, effect) or (value, label, effect, {"aliases": [...], "flag": bool})."""
+        opts = [Option(value=o[0], label=o[1], effect=o[2], **(o[3] if len(o) > 3 else {})) for o in options]
+        q = Question(id=f"q.{id}", text=text, options=opts, decision_ids=list(decision_ids), answer=answer,
+                     keyword=keyword or id, column=column)
         self.questions.append(q)
         return q
 
 
 def contextual(out: Emitter, ctx: RuleContext, *, qid: str, question: str,
-               options: list[tuple[str, str, str]], confirm: str, decision_id: str,
-               title: str, stage: str, action: str, rationale: str, **kw: Any) -> Decision:
+               options: list[tuple], confirm: str, decision_id: str,
+               title: str, stage: str, action: str, rationale: str, keyword: str = "",
+               column: str | None = None, **kw: Any) -> Decision:
     """Emit a contextual decision tied to a question; status follows the answer.
 
     `confirm` is the option value that confirms the decision's action."""
@@ -154,7 +157,7 @@ def contextual(out: Emitter, ctx: RuleContext, *, qid: str, question: str,
         status = DecisionStatus.DECLINED
     d = out.decision(decision_id, title, DecisionClass.CONTEXTUAL, stage, action, rationale,
                      status=status, question_id=full_qid, **kw)
-    out.question(qid, question, options, decision_ids=[d.id], answer=answer)
+    out.question(qid, question, options, decision_ids=[d.id], answer=answer, keyword=keyword, column=column)
     return d
 
 

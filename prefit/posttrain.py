@@ -167,7 +167,77 @@ def _reviewed(report: Any) -> list[dict[str, str]]:
 
 # review metric key <- the sklearn scorer behind report.cv_estimate()
 _CV_KEY = {"neg_mean_absolute_error": "MAE", "neg_root_mean_squared_error": "RMSE", "r2": "R2",
-           "accuracy": "accuracy", "balanced_accuracy": "balanced_accuracy", "f1_macro": "macro_f1"}
+           "accuracy": "accuracy", "balanced_accuracy": "balanced_accuracy", "f1_macro": "macro_f1",
+           "roc_auc": "roc_auc", "average_precision": "average_precision"}
+
+
+def _binary_scores(yt: np.ndarray, yp: np.ndarray, y_score: Any, pos_label: Any) -> tuple[np.ndarray, np.ndarray] | None:
+    """(1 = positive class, scores) for a binary task with scores, as the review reads them."""
+    if y_score is None:
+        return None
+    labels = list(pd.unique(np.concatenate([yt, yp])))
+    if len(labels) != 2:
+        return None
+    try:
+        labels = sorted(labels)
+    except TypeError:
+        labels = sorted(labels, key=str)
+    counts = [(yt == lab).sum() for lab in labels]
+    minority = labels[int(np.argmin(counts))]
+    pl = pos_label if pos_label in labels else (minority if pos_label is None else labels[-1])
+    sc = np.asarray(y_score, dtype=float)
+    if sc.ndim == 2:
+        sc = sc[:, -1]
+    return (yt == pl).astype(float), sc.ravel()
+
+
+def _ranking_order(sc: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Sort orders and tie-group starts, computed once for every bootstrap weight vector."""
+    up = np.argsort(sc, kind="mergesort")
+    _, start_up = np.unique(sc[up], return_index=True)
+    down = up[::-1]
+    _, start_dn = np.unique(-sc[down], return_index=True)
+    return up, start_up, down, start_dn
+
+
+def _weighted_auc_ap(yb: np.ndarray, w: np.ndarray, order: tuple) -> tuple[float, float] | None:
+    """ROC-AUC (ties count one half) and average precision (ties grouped, as scikit-learn)
+    with case weights; None when a class has no weight."""
+    up, start_up, down, start_dn = order
+    wp = np.add.reduceat((w * yb)[up], start_up)
+    wn = np.add.reduceat((w * (1 - yb))[up], start_up)
+    P, N = wp.sum(), wn.sum()
+    if P == 0 or N == 0:
+        return None
+    auc = float((wp * (np.cumsum(wn) - wn + 0.5 * wn)).sum() / (P * N))
+    tp = np.cumsum(np.add.reduceat((w * yb)[down], start_dn))
+    fp = np.cumsum(np.add.reduceat((w * (1 - yb))[down], start_dn))
+    ap = float((np.diff(np.r_[0.0, tp / P]) * tp / np.maximum(tp + fp, 1e-12)).sum())
+    return auc, ap
+
+
+def _score_intervals(yb: np.ndarray, sc: np.ndarray, units: np.ndarray, n_boot: int,
+                     seed: int) -> dict[str, tuple[float, float]]:
+    """Bootstrap 95% intervals of ROC-AUC and PR-AUC, resampling units (sets of identical rows) as
+    weights."""
+    if n_boot <= 0 or len(yb) < 2 or yb.min() == yb.max():
+        return {}
+    codes = np.asarray(pd.factorize(units)[0])
+    n_units = int(np.max(codes)) + 1
+    order = _ranking_order(sc)
+    rng = np.random.default_rng(seed + 1)
+    aucs, aps = [], []
+    for _ in range(n_boot):
+        w = np.bincount(rng.integers(0, n_units, n_units), minlength=n_units)[codes].astype(float)
+        got = _weighted_auc_ap(yb, w, order)
+        if got is not None:
+            aucs.append(got[0])
+            aps.append(got[1])
+    out = {}
+    for key, v in (("roc_auc", aucs), ("average_precision", aps)):
+        if v:
+            out[key] = (r(float(np.percentile(v, 2.5))), r(float(np.percentile(v, 97.5))))
+    return out
 
 
 def _weighted_metrics(task: str, yt: np.ndarray, yp: np.ndarray, w: np.ndarray) -> dict[str, float]:
@@ -220,7 +290,10 @@ def _cv_check(rep: ReviewReport, report: Any) -> None:
         hypothesis="The development CV estimate describes the score on the untouched test data.", held=held,
         evidence={"cv_estimate": r(est["mean"]), "cv_std": r(est["std"]), "test": rep.metrics.get(key),
                   "test_interval": [lo, hi]},
-        reference=f"95% bootstrap interval of the test {key}; CV: {est['cv']} ({est['family']})",
+        reference=(f"95% bootstrap interval of the test {key}; CV: {est['cv']} ({est['family']}). Limit: leakage "
+                   "that inflates the CV and the test score alike (a leaked feature present in both, near-duplicates "
+                   "on both sides of the split) moves both together, so this check still holds; it detects a "
+                   "development/test mismatch, not leakage."),
         comment=(f"Held: CV {key} {est['mean']:.4g} lies inside the test interval [{lo:.4g}, {hi:.4g}]; the gap to "
                  f"the test score ({rep.metrics.get(key, float('nan')):.4g}) is within test-set noise." if held else
                  f"Did not hold: CV {key} {est['mean']:.4g} lies outside the test interval [{lo:.4g}, {hi:.4g}]. "
@@ -485,6 +558,9 @@ def review(y_true: Any, y_pred: Any, report: Any = None, *, y_score: Any = None,
             pos = positive_label(report.details.profile, report.metric_plan.positive_label)
         rep = _review_classification(yt, yp, fids, y_score, pos, segments)
         rep.intervals = _intervals("classification", yt, yp, units, n_bootstrap, seed)
+        scored = _binary_scores(yt, yp, y_score, pos)
+        if scored is not None:
+            rep.intervals.update(_score_intervals(*scored, units, n_bootstrap, seed))
     else:
         raise ValueError(f"review() supports 'regression' and 'classification'; got {t!r}.")
     rep.intervals = {k: v for k, v in rep.intervals.items() if k in rep.metrics}

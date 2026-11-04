@@ -27,6 +27,9 @@ from .common import (
     CLASS_LABEL,
     ICON,
     SEV_TONE,
+    STATE_ICON,
+    STATE_LABEL,
+    answer_line,
     attention,
     effect,
     experiment_summary,
@@ -34,10 +37,11 @@ from .common import (
     fmt_ci,
     headline,
     key_evidence,
+    next_lines,
     next_step,
     partition_note,
+    states,
     status_word,
-    summary_counts,
     task_dependence_note,
     task_note,
     tone,
@@ -245,6 +249,9 @@ def _decision_card(r: Any, d: Any, inline_figs: set[str]) -> str:
         parts.append(f'<p class="exp"><span class="lbl">Experiment</span>{esc(ex)}</p>')
     if d.note:
         parts.append(f'<p class="note"><span class="lbl">Note</span>{esc(d.note)}</p>')
+    if d.alternatives:
+        parts.append(f'<details class="more"><summary>Show alternatives ({len(d.alternatives)})</summary><ul>'
+                     + "".join(f"<li>{esc(a)}</li>" for a in d.alternatives) + "</ul></details>")
     if d.review_note:
         parts.append(f'<p class="note"><span class="lbl">Your note</span>{esc(d.review_note)}</p>')
     tn = task_dependence_note(r, d)
@@ -320,24 +327,39 @@ def _question(q: Any) -> str:
                "</div>")
     dl = " · ".join(_link(x, "decision") for x in q.decision_ids)
     return (f'<div class="q" id="{aid(q.id)}"><b>{esc(q.text)}</b> <span class="links">{dl}</span><ul>{opts}</ul>'
-            f'{sug}<code>report = report.answer({{"{esc(q.id[2:])}": "&lt;option&gt;"}})</code></div>')
+            f'{sug}<pre class="code">{esc(answer_line(q))}</pre></div>')
+
+
+_STATE_COLOR = {"needs_you": "#c26b00", "tested": "#2a78d6", "done": "#1a8a5a"}
 
 
 def summary_card(r: Any) -> str:
-    """Compact HTML for notebooks (Report._repr_html_): no plots, no details."""
-    c = summary_counts(r)
-    att = "".join(f"<li>{status_badge(d.status)} {esc(d.title)}</li>" for d in attention(r)[:8])
+    """Compact HTML for notebooks (Report._repr_html_): three states, the lines to run. No plots."""
+    g = states(r)
+    cols = []
+    for k in ("needs_you", "tested", "done"):
+        items = [d for d in g[k] if not d.standard]
+        n_std = len(g[k]) - len(items)
+        li = "".join(f"<li>{esc(d.title)} <span style='color:#888'>[{esc(status_word(d.status))}]</span></li>"
+                     for d in items[:8])
+        if len(items) > 8:
+            li += f"<li style='color:#888'>+{len(items) - 8} more</li>"
+        if n_std:
+            li += f"<li style='color:#888'>{n_std} standard practice</li>"
+        cols.append(f"<div style='flex:1;min-width:180px'><b style='color:{_STATE_COLOR[k]}'>{STATE_ICON[k]} "
+                    f"{len(g[k])} {STATE_LABEL[k]}</b><ul style='margin:4px 0;padding-left:18px'>{li}</ul></div>")
+    code = esc("\n".join(next_lines(r)))
     return (f'<div style="font:14px/1.5 system-ui,sans-serif;border:1px solid #ccc;border-radius:10px;padding:12px">'
             f"<b>prefit report · {esc(r.target)}</b> (revision {r.details.manifest.revision})<br>"
-            f"{esc(headline(r))}<br><b>Next step:</b> {esc(next_step(r))}"
-            + (f"<br><b>Needs your attention</b><ul style='margin:4px 0'>{att}</ul>" if att else "")
-            + f"<span style='color:#666'>{c['questions']} open question(s) · print(report) for the roadmap · "
-              "report.decisions_table() · report.to_html(path)</span></div>")
+            f"{esc(headline(r))}<div style='display:flex;gap:16px;flex-wrap:wrap;margin:8px 0'>{''.join(cols)}</div>"
+            f"<b>Run next</b><pre style='background:rgba(127,127,127,.12);padding:8px;border-radius:6px;"
+            f"overflow-x:auto;margin:4px 0'>{code}</pre>"
+            "<span style='color:#666'>report.show() for the figures · print(report) for the roadmap · "
+            "report.decisions_table() for the details · report.to_html(path)</span></div>")
 
 
 def report_body(r: Any) -> tuple[str, dict[str, Any]]:
     p = r.details.profile
-    c = summary_counts(r)
     figs = {f.id: f.plot for f in r.details.figures}
     ctx = r.details.context
     chips = [f"target: {r.target}", f"task: {r.task.value}" + task_note(r),
@@ -350,10 +372,11 @@ def report_body(r: Any) -> tuple[str, dict[str, Any]]:
     out = [f'<section id="summary"><h1>prefit report · {esc(r.target)}</h1><div class="chips">'
            + "".join(f'<span class="chip">{esc(x)}</span>' for x in chips) + "</div>"
            + '<div class="tiles">'
-           f'<div class="tile"><b>{c["questions"]}</b><span>questions awaiting your answer</span></div>'
-           f'<div class="tile"><b>{c["critical_or_review"]}</b><span>critical or review decisions</span></div>'
-           "</div>"
+           + "".join(f'<div class="tile"><b>{STATE_ICON[k]} {len(v)}</b><span>{STATE_LABEL[k]}</span></div>'
+                     for k, v in states(r).items())
+           + "</div>"
            f'<p class="next"><b>Next step:</b> {esc(next_step(r))}</p>'
+           f'<pre class="code">{esc(chr(10).join(next_lines(r)))}</pre>'
            f'<div class="partition" role="note"><b>Data partition.</b> {esc(partition_note(r))}</div></section>']
 
     # actions

@@ -5,9 +5,12 @@
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest -q                      # tests (includes the benchmark cases)
+pytest -q -n auto              # all tests in parallel (~20 s); -m "not slow" skips simulations,
+                               # timing and real-data tests (those download into ~/.cache/prefit)
 ruff check . && mypy prefit
 python benchmarks/run.py       # refreshes benchmarks/results and the track record
+python benchmarks/check_manifest.py   # what CI checks: results match the shipped rule versions
+python benchmarks/real_data.py # plain flow vs prefit on real data (~15 min, downloads once)
 ```
 
 ## Adding or changing a rule
@@ -25,10 +28,16 @@ python benchmarks/run.py       # refreshes benchmarks/results and the track reco
    its `Step.kind`.
 5. Add benchmark cases in `benchmarks/fixtures.py`: one where it must fire, one
    where it must not, and a near-threshold one where that is meaningful.
-6. Bump the rule's version when its thresholds or logic change, and bump
-   `MANIFEST_VERSION` when cases or expectations change. Re-run
-   `python benchmarks/run.py` and commit the results, including failures.
-7. If decision structure changes, refresh the golden files:
+6. Bump the rule's version when its thresholds, logic or emitted text change,
+   and bump `MANIFEST_VERSION` when rules, cases or expectations change. Re-run
+   `python benchmarks/run.py` and commit the results, including failures. CI
+   (`benchmarks/check_manifest.py`) fails when the committed results were
+   produced by other rule versions.
+7. Give every conditional decision its `alternatives` (what else, and when it
+   is right), and every question a `keyword` (and `column` for per-column
+   questions, with `flag` on the options) so `answer(**kw)` and the suggested
+   lines work.
+8. If decision structure changes, refresh the golden files:
    `UPDATE_GOLDEN=1 pytest tests/test_snapshot.py`, and review the diff.
 
 ## Versioning
