@@ -61,3 +61,16 @@ def test_single_feature_score_separates_signal_from_noise():
     assert single_feature_score(noise, y, True, True, 0) < 0.15
     ids = pd.Series([f"id{i}" for i in range(2000)])
     assert single_feature_score(ids, y, False, True, 0) < 0.15  # memorization does not score
+
+
+def test_signal_ranks_strong_features_on_an_imbalanced_target():
+    """A category with 45% positives vs 5% never flips the majority class, so the
+    leak score stays at 0; the threshold-free signal still ranks it first."""
+    n = 4000
+    g = rng.choice(["month", "year", "two_year"], n, p=[0.5, 0.3, 0.2])
+    y = pd.Series((rng.random(n) < np.select([g == "month", g == "year"], [0.45, 0.10], 0.03)).astype(int))
+    from prefit.profiling.stats import single_feature_scores
+
+    leak, signal = single_feature_scores(pd.Series(g), y, False, True, 0)
+    noise_leak, noise_signal = single_feature_scores(pd.Series(rng.choice(list("abc"), n)), y, False, True, 0)
+    assert leak == 0.0 and signal > 0.3 and noise_signal < 0.05

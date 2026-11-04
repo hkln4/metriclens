@@ -38,7 +38,7 @@ def test_reprs_are_short(imb_df):
     assert len(repr(rep)) < 500 and "Next:" in repr(rep)
     for obj in (rep.decisions[0], rep.details.findings[0], rep.questions[0], rep.metric_plan, rep.details):
         assert len(repr(obj)) < 300 and repr(obj).startswith("<")
-    assert "<b>Next step:</b>" in rep._repr_html_()
+    assert "<b>Run next</b>" in rep._repr_html_() and "report.answer(" in rep._repr_html_()
 
 
 def test_decisions_table(imb_df):

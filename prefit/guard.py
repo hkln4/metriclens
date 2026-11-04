@@ -187,7 +187,7 @@ def reserve_holdout(
     mask[hold] = True
     return all_pos[~mask], all_pos[mask], {
         "used": True, "fraction": fraction, "n_holdout": int(mask.sum()),
-        "n_dev": int((~mask).sum()), "method": method, "seed": seed, **extra,
+        "n_dev": int((~mask).sum()), "method": method, "seed": seed, "task": task.value, **extra,
     }
 
 

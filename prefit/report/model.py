@@ -107,6 +107,13 @@ class Decision(Frozen):
     task_dependent: bool = False  # only meaningful under the current task; flagged while it is unconfirmed
     standard: bool = False        # standard practice that appears on every dataset (fit in fold, holdout, ...)
     review_note: str = ""         # the user's note when a review item was closed with report.resolve
+    # the other ways to go, each with when it is the right one ("median imputation — when ...")
+    alternatives: tuple[str, ...] = ()
+
+    @property
+    def state(self) -> str:
+        """The three states shown to the user: "done", "needs_you" or "tested"."""
+        return STATE.get(self.status, "done")
 
     def eligible(self, include_proxy_supported: bool = False) -> bool:
         """Whether this decision's step may enter an exported model recipe."""
@@ -124,10 +131,26 @@ class Decision(Frozen):
         return f"<Decision {self.status.value} · {self.cls.value} · {self.title}>"
 
 
+STATE: dict[DecisionStatus, str] = {
+    # done: nothing left to do
+    DecisionStatus.APPLIED: "done", DecisionStatus.CONFIRMED: "done", DecisionStatus.DECLINED: "done",
+    DecisionStatus.REVIEWED: "done", DecisionStatus.NOT_APPLICABLE: "done",
+    # needs you: an answer, a review, or an experiment you have not run
+    DecisionStatus.AWAITING_USER: "needs_you", DecisionStatus.NEEDS_REVIEW: "needs_you",
+    DecisionStatus.PROPOSED: "needs_you", DecisionStatus.UNCERTAIN: "needs_you",
+    DecisionStatus.SKIPPED_BUDGET: "needs_you",
+    # tested: an experiment settled it (in or out of the recipe, see the status)
+    DecisionStatus.VERIFIED: "tested", DecisionStatus.REFUTED: "tested", DecisionStatus.INCONCLUSIVE: "tested",
+    DecisionStatus.NO_PRACTICAL_EFFECT: "tested", DecisionStatus.SUPPORTED_BY_PROXY: "tested",
+}
+
+
 class Option(Frozen):
     value: str
     label: str
     effect: str = ""
+    aliases: tuple[str, ...] = ()    # other accepted answers, e.g. "mae" for "typical_error"
+    flag: bool | None = None         # the True/False answer that selects this option (column questions)
 
 
 class Question(Frozen):
@@ -136,6 +159,9 @@ class Question(Frozen):
     options: tuple[Option, ...]
     decision_ids: tuple[str, ...] = ()
     answer: str | None = None
+    # report.answer(<keyword>=...) answers it; column questions take {column: True/False}
+    keyword: str = ""
+    column: str | None = None
     # an LLM may suggest an answer; it is never applied without the user
     suggestion: str | None = None
     suggestion_reason: str | None = None
@@ -318,6 +344,10 @@ class Report(Frozen):
     _holdout_positions: Any = PrivateAttr(default=None)
     _estimator: Any = PrivateAttr(default=None)
     _row_hashes: Any = PrivateAttr(default=None)
+    # the frame passed to analyze (a reference, not a copy; still fingerprint-checked on use)
+    # and per-session state shared by every revision (how often the test data was reviewed)
+    _data: Any = PrivateAttr(default=None)
+    _session: Any = PrivateAttr(default=None)
 
     # ---- reading ---------------------------------------------------------- #
     def decision(self, decision_id: str) -> Decision:
@@ -338,7 +368,9 @@ class Report(Frozen):
     def cv_estimate(self, family: str | None = None) -> dict[str, Any] | None:
         """The development cross-validation estimate from `verify`, in natural units
         (errors positive): {"metric", "label", "mean", "std", "n_folds", "cv", "family",
-        "estimator"}. `family` defaults to your estimator ("user"), else the first proxy.
+        "estimator", "recipe"}. `family` defaults to your estimator ("user"), else the first proxy.
+        When `verify` verified changes, the estimate is for the recipe with them (`recipe` lists
+        them), scored on the same folds, so it describes the model `export()` builds.
         None before `verify`."""
         from ..rules.metrics import label, natural
 
@@ -350,15 +382,26 @@ class Report(Frozen):
         if fam not in fams:
             raise KeyError(f"No CV estimate for family {fam!r}; available: {sorted(fams)}")
         f, mt = fams[fam], b["metric"]
-        return {"metric": mt, "label": label(mt), "mean": natural(mt, f["mean"]), "std": f["std"],
-                "n_folds": b.get("n_folds"), "cv": b.get("cv"), "family": fam, "estimator": f["estimator"]}
+        rec = f.get("recipe")
+        src = rec or f
+        return {"metric": mt, "label": label(mt), "mean": natural(mt, src["mean"]), "std": src["std"],
+                "n_folds": b.get("n_folds"), "cv": b.get("cv"), "family": fam, "estimator": f["estimator"],
+                "recipe": list(rec["decisions"]) if rec else []}
 
     # ---- flow ------------------------------------------------------------- #
-    def answer(self, answers: dict[str, str]) -> Report:
-        """New revision with these answers applied; contextual decisions are re-derived."""
+    def answer(self, answers: dict[str, Any] | None = None, /, **by_keyword: Any) -> Report:
+        """New revision with these answers applied; contextual decisions are re-derived.
+
+            report.answer(task="regression", metric="mae")
+            report.answer(known_at_prediction={"discount": False}, identifier=["user_id"])
+            report.answer({"metric_priority": "typical_error"})      # question ids work too
+
+        Each open question names its keyword (`print(report)` shows the line to run).
+        A different `task` re-runs the analysis on the frame kept in memory (see
+        `change_task`) and then applies the other answers."""
         from ..api import _apply_answers
 
-        return _apply_answers(self, answers)
+        return _apply_answers(self, dict(answers or {}), by_keyword)
 
     def resolve(self, decision_id: str, note: str) -> Report:
         """New revision closing a review item with your note (status `reviewed`).
@@ -369,30 +412,34 @@ class Report(Frozen):
 
         return _resolve(self, decision_id, note)
 
-    def change_task(self, df: Any, task: Any) -> Report:
+    def change_task(self, task: Any, df: Any = None) -> Report:
         """New revision analyzed as `task`, keeping what still applies.
 
-        `df` must be the frame passed to `analyze` (checked by fingerprint). Valid
-        answers, review notes, the registered external holdout and the options are
-        carried over; experiments are dropped, since they belong to the old task."""
+        Uses the frame kept in memory (or `df`, which must be the frame passed to
+        `analyze`; checked by fingerprint either way). The holdout keeps the same
+        rows. Valid answers, review notes, the registered external holdout and the
+        options are carried over; experiments are dropped, since they belong to the
+        old task. `change_task(df, task)` (frame first) is accepted too."""
         from ..api import _change_task
 
+        if not isinstance(task, (str, Task)) and isinstance(df, (str, Task)):
+            task, df = df, task  # the 0.3 order: change_task(df, task)
         return _change_task(self, df, task)
 
-    def verify(self, df: Any, estimator: Any = None, budget: Any = None, groups: Any = None) -> Report:
+    def verify(self, df: Any = None, estimator: Any = None, budget: Any = None, groups: Any = None) -> Report:
         """New revision with bounded experiments for the conditional decisions.
 
-        `df` must be the same DataFrame that was passed to `analyze` (checked by
-        fingerprint); any internal holdout is excluded automatically."""
+        Uses the frame kept in memory, or `df` (the frame passed to `analyze`,
+        checked by fingerprint either way); any internal holdout is excluded."""
         from ..api import _verify
 
         return _verify(self, df, estimator=estimator, budget=budget, groups=groups)
 
-    def holdout(self, df: Any) -> tuple[Any, Any]:
+    def holdout(self, df: Any = None) -> tuple[Any, Any]:
         """(dev_df, holdout_df) exactly as reserved by `analyze(..., holdout=...)`.
 
-        Re-derives a partition made before profiling; it never splits anew. `df`
-        must be the DataFrame passed to `analyze` (checked by fingerprint)."""
+        Re-derives a partition made before profiling; it never splits anew. Uses the
+        frame kept in memory, or `df` (checked by fingerprint)."""
         from ..api import _holdout
 
         return _holdout(self, df)
@@ -401,11 +448,44 @@ class Report(Frozen):
         """New revision recording an evaluation partition kept out of the analysis.
 
         Only metadata is stored (rows, columns, digests); the frame is not
-        profiled. With `dev_df` (the frame passed to `analyze`), exact row
-        overlap between the two is counted."""
+        profiled. Exact row overlap with the development frame (kept in memory, or
+        `dev_df`) is counted."""
         from ..api import _register_external_holdout
 
         return _register_external_holdout(self, holdout_df, dev_df=dev_df, name=name)
+
+    def review(self, model: Any, test_df: Any = None, *, segments: Any = None, n_bootstrap: int = 1000,
+               seed: int = 0) -> Any:
+        """Score a fitted model once on the untouched test data and check the roadmap.
+
+        `test_df` defaults to the internal holdout (`analyze(..., holdout=0.2)`);
+        pass your test frame otherwise. Predictions use the model's own feature
+        columns. A second review of the same test data in one session warns: a
+        test set looked at twice is no longer an unbiased estimate."""
+        from ..api import _review_model
+
+        return _review_model(self, model, test_df, segments=segments, n_bootstrap=n_bootstrap, seed=seed)
+
+    def next_steps(self) -> list[str]:
+        """The lines to run next, one per open item, ready to copy."""
+        from ..render.common import next_lines
+
+        return next_lines(self)
+
+    def show(self, decision_id: str | None = None) -> None:
+        """Notebook view: the status card, the first-look table and the figures
+        behind the decisions that need you. `show("d.xxx")` shows one decision with
+        its evidence and figure. Outside a notebook it prints the same as text."""
+        from ..render.notebook import show
+
+        show(self, decision_id)
+
+    def first_look(self) -> Any:
+        """One row per column: kind, missing %, distinct values, skew, the
+        single-feature score, and the decisions that mention it (a DataFrame)."""
+        from ..render.tables import first_look
+
+        return first_look(self)
 
     def export(self, estimator: Any = None, include_proxy_supported: bool = False, scale: bool = True) -> Any:
         """Model recipe + preprocessor + CV + scoring from eligible decisions only."""

@@ -16,11 +16,14 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    │             duplicate-aware: exact duplicate rows move as one unit (unless groups/time_col)
    ▼  fingerprint.py ─ SHA-256 digests of the input frame -> manifest (no data)
    ▼  profiling/ ─ dev rows only, seeded sample above ProfileOptions.max_rows
-   │     kinds.py   column kind + reason (numeric, categorical, boolean,
-   │                datetime, text, id_like, constant)
-   │     stats.py   per-kind stats, bootstrap / Wilson intervals,
-   │                single-feature held-out association score
-   │     tabular.py → DataProfile (aggregates only, JSON-serializable)
+   │     kinds.py        column kind + reason (numeric, categorical, boolean,
+   │                     datetime, text, id_like, constant); numbers stored as
+   │                     text are numeric, blanks/placeholders are missing
+   │     stats.py        per-kind stats, vectorized bootstrap / Wilson intervals,
+   │                     single-feature held-out scores (leak score + signal)
+   │     missingness.py  per column with missing values: target relation
+   │                     (permutation test), structural pattern, related features
+   │     tabular.py      → DataProfile (aggregates only, JSON-serializable)
    ▼  rules/ ─ deterministic: DataProfile + RuleContext → RuleOutput
    │     catalog.py  versioned rules with thresholds; emit Evidence → Finding → Decision (+ Question)
    │     metrics.py  metric policy: one contextual decision driven by the cost of errors
@@ -30,18 +33,26 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
    │                    profile, figures, manifest, context, limitations, llm);
    │                    deeply immutable (frozen.py)
    │
-   ├─ Report.answer(...)                  re-runs the rules with new answers (no data needed)
+   │  The report keeps a reference to the analyzed frame (Report._data, never
+   │  serialized); every step below that needs rows takes it from there or from
+   │  an explicit df, and checks its fingerprint either way.
+   │
+   ├─ Report.answer(...)                  keywords/aliases -> question ids; re-runs the rules (no data);
+   │                                      a different task= goes through change_task
    ├─ Report.resolve(id, note)            closes a review item with a note (status reviewed)
-   ├─ Report.change_task(df, task)        fingerprint check, re-analyze, carry answers/notes/holdout
-   ├─ Report.verify(df)                   fingerprint check, then verify.py on dev rows
-   ├─ Report.holdout(df)                  fingerprint check, re-derives the internal holdout
+   ├─ Report.change_task(task)            re-analyze on the same rows and the same holdout, carry answers/notes
+   ├─ Report.verify()                     verify.py on dev rows (automatic parallel folds)
+   ├─ Report.holdout()                    re-derives the internal holdout
    ├─ Report.register_external_holdout()  metadata + exact-overlap count, never profiled
-   ├─ Report.export()                     export.py: model recipe + preprocessor + CV + scoring
+   ├─ Report.export()                     export.py: model recipe + preprocessor + CV + scoring; .fit() on dev rows
    │                                      (splitters.py: DuplicateAwareKFold when the dev rows have exact duplicates)
+   ├─ Report.review(model)                predicts on the holdout once (warns on a second look) -> posttrain.py
+   ├─ Report.show() / first_look()        render/notebook.py, render/tables.py: notebook view
+   ├─ Report.next_steps()                 render/common.py: one runnable line per open item
    ├─ Report.interpret()  llm/: optional, schema-constrained interpretation
    ├─ Report.to_html()    render/: single-file report
-   └─ pf.review(...)      posttrain.py: assumptions vs. actual errors, bootstrap intervals,
-                          CV estimate vs. test interval
+   └─ pf.review(...)      posttrain.py: assumptions vs. actual errors, bootstrap intervals
+                          (ROC/PR-AUC included), CV estimate vs. test interval
 ```
 
 ## Contracts
@@ -57,6 +68,13 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
 - **Decision.eligible()** — the single rule for what enters the pipeline:
   procedural+applied, contextual+confirmed, conditional+verified (or
   supported_by_proxy when explicitly requested).
+- **Decision.state** — what the user sees: `done`, `needs_you` or `tested`, a
+  fixed map from the status (`report.model.STATE`).
+- **Decision.alternatives** — the other options and when each is right. A good
+  roadmap item carries its evidence, its alternatives, when each is right, and
+  the cheapest way to find out (an experiment, a question, a look).
+- **Question.keyword / column, Option.aliases / flag** — how `answer(**kw)`
+  maps `metric="mae"` or `known_at_prediction={"x": False}` to an option.
 
 ## Why these boundaries
 
@@ -93,6 +111,16 @@ dev_df, target, [estimator, groups, time_col, holdout, context, answers]
 8. **The LLM is above the trust boundary.** It sees an allowlisted payload
    (inspectable with `llm_payload()`), must cite existing ids, and can only
    suggest; `answer()` is the only way an answer is applied.
+
+9. **A statistic enters the roadmap only if it changes a decision.** Otherwise
+   it stays in the profile (the first-look table, the HTML details). The
+   missingness measurements follow this: a structural pattern becomes a question,
+   a target relation a review item with its rates, a predictable column an
+   experiment; missing at random raises nothing.
+10. **Recommendations are hypotheses.** prefit does not choose models; it
+    measures whether a suggestion helps *your* model, and says what it cannot
+    see (the CV check in the review passes leakage that inflates CV and test
+    alike).
 
 ## Adding a rule
 

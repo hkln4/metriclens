@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2026.11-3",
+  "manifest_version": "2026.11-4",
   "rules": {
     "target_skew": {
       "checks": 2,
@@ -53,13 +53,25 @@
       "checks": 1,
       "passed": 1
     },
+    "structural_missingness": {
+      "checks": 4,
+      "passed": 4
+    },
     "high_cardinality": {
-      "checks": 1,
-      "passed": 1
+      "checks": 2,
+      "passed": 2
+    },
+    "informative_missingness": {
+      "checks": 2,
+      "passed": 2
+    },
+    "model_imputation": {
+      "checks": 2,
+      "passed": 2
     },
     "task_confirmation": {
-      "checks": 1,
-      "passed": 1
+      "checks": 2,
+      "passed": 2
     }
   }
 }

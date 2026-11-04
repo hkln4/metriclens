@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-MANIFEST_VERSION = "2026.11-3"
+MANIFEST_VERSION = "2026.11-4"
 
 
 @dataclass
@@ -146,6 +146,13 @@ def count_target() -> pd.DataFrame:
     return df
 
 
+def ordinal_score() -> pd.DataFrame:
+    # a 0-6 rating (Wine Quality style): integers with few values, ordered
+    df = _reg()
+    df["y"] = np.clip(np.round(df.y - df.y.mean() + 3), 0, 6).astype(int)
+    return df
+
+
 def small_data() -> pd.DataFrame:
     return _reg(n=300)
 
@@ -171,6 +178,44 @@ def _sk(loader: str) -> Callable[[], pd.DataFrame]:
     return make
 
 
+def numbers_as_text() -> pd.DataFrame:
+    # Telco-style: a numeric column stored as text, blank where it does not exist yet (tenure == 0)
+    rng = np.random.default_rng(1021)  # not 21: _base(seed=21) draws f1 from that stream
+    df = _cls(seed=21)
+    tenure = rng.integers(0, 72, len(df))
+    monthly = rng.uniform(20, 110, len(df)).round(2)
+    total = (tenure * monthly).round(2).astype(str).astype(object)
+    total[tenure == 0] = " "
+    return df.assign(tenure=tenure, monthly=monthly, total=total)
+
+
+def informative_missing() -> pd.DataFrame:
+    # a lab value recorded far more often for positives (missingness caused by the outcome)
+    rng = np.random.default_rng(1022)  # not 22: _base(seed=22) draws f1 from that stream
+    df = _cls(seed=22)
+    lab = rng.normal(size=len(df))
+    lab[rng.random(len(df)) < np.where(df.y == 1, 0.30, 0.05)] = np.nan
+    return df.assign(lab=lab)
+
+
+def random_missing() -> pd.DataFrame:
+    # 15% missing completely at random: no missingness rule may fire
+    rng = np.random.default_rng(1023)  # not 23: _base(seed=23) draws f1 from that stream
+    df = _cls(seed=23)
+    v = rng.normal(size=len(df))
+    v[rng.random(len(df)) < 0.15] = np.nan
+    return df.assign(m=v)
+
+
+def mar_missing() -> pd.DataFrame:
+    # a column predictable from f1 and missing more often when f1 is large
+    rng = np.random.default_rng(1024)  # not 24: _base(seed=24) draws f1 from that stream
+    df = _reg(seed=24)
+    b = df.f1 * 0.9 + rng.normal(size=len(df)) * 0.3
+    b[rng.random(len(df)) < 1 / (1 + np.exp(-2 * df.f1)) * 0.4] = np.nan
+    return df.assign(b=b)
+
+
 CASES: list[Case] = [
     Case("clean_regression", clean_regression, "y", "regression",
          must_not_fire=["target_skew", "leakage_hint", "duplicate_rows", "id_like_columns", "high_missingness",
@@ -192,10 +237,20 @@ CASES: list[Case] = [
     Case("datetime_column", datetime_column, "y", "regression", must_fire=["temporal_order"],
          must_not_fire=["id_like_columns"]),
     Case("high_missing", high_missing, "y", "regression", must_fire=["high_missingness"]),
+    Case("numbers_as_text_structural", numbers_as_text, "y", "classification",
+         must_fire=["structural_missingness"], must_not_fire=["high_cardinality"]),
+    Case("informative_missing", informative_missing, "y", "classification",
+         must_fire=["informative_missingness"], must_not_fire=["structural_missingness"]),
+    Case("random_missing", random_missing, "y", "classification",
+         must_not_fire=["informative_missingness", "structural_missingness", "model_imputation"]),
+    Case("mar_missing", mar_missing, "y", "regression", must_fire=["model_imputation"],
+         must_not_fire=["structural_missingness"]),
     Case("high_cardinality", high_cardinality, "y", "classification", must_fire=["high_cardinality"],
          must_not_fire=["id_like_columns"]),
-    Case("count_target_inferred_regression", count_target, "y", None, must_fire=["task_confirmation"],
-         must_not_fire=["class_imbalance"]),
+    # many distinct counts leave no doubt (regression): no question; a 0-6 score could be labels or a score: asked
+    Case("count_target_inferred_regression", count_target, "y", None,
+         must_not_fire=["class_imbalance", "task_confirmation"]),
+    Case("ordinal_score_inferred_ambiguous", ordinal_score, "y", None, must_fire=["task_confirmation"]),
     Case("small_data", small_data, "y", "regression", must_fire=["small_data"]),
     Case("zero_inflated", zero_inflated, "y", "regression", must_fire=["zero_inflation"]),
     Case("constant_column", constant_column, "y", "regression", must_fire=["constant_columns"]),

@@ -16,6 +16,8 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: mypy prefit
+      - name: Benchmark manifest matches the shipped rules and the package version
+        run: python benchmarks/check_manifest.py
 
   test:
     runs-on: ubuntu-latest
@@ -29,7 +31,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: pytest -q --cov=prefit --cov-report=term
+      # -n auto: tests run in parallel (conftest gives each worker one OpenMP/BLAS thread)
+      - run: pytest -q -n auto --cov=prefit --cov-report=term
       - name: HTML smoke test (CLI end to end)
         run: |
           python - <<'PY'

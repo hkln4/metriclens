@@ -67,18 +67,13 @@ footer{margin-top:48px;color:var(--muted);font-size:.9rem}
 <pre><code>import prefit as pf
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-model = HistGradientBoostingRegressor(random_state=0)
-dev_df, test_df = pf.split(df, target="price", test_size=0.2, strategy="random")
-
-report = pf.analyze(dev_df, target="price", estimator=model)
-print(report)                                   # roadmap: one line of why / do per decision
-report = report.answer({"metric_priority": "typical_error"})
-report = report.verify(dev_df)                  # bounded experiments with your model
-report.to_html("report.html")
-
-built = report.export()                         # model recipe + CV + scoring
-fitted = built.model.fit(dev_df[built.feature_columns], dev_df["price"])
-pf.review(test_df["price"], fitted.predict(test_df[built.feature_columns]), report)</code></pre>
+report = pf.analyze(df, "quality", estimator=HistGradientBoostingRegressor(), holdout=0.2)
+report = report.answer(task="regression", metric="mae").verify()
+fitted = report.export().fit()
+review = report.review(fitted)</code></pre>
+<p>The holdout is set aside before anything is computed and read once, by <code>review</code>. In a notebook,
+<code>report</code> shows what is done, what needs you and what was tested, with the next lines to run;
+<code>report.show()</code> adds the figures behind the decisions that need you.</p>
 
 <h2>Four kinds of decision</h2>
 <div class="tw"><table>

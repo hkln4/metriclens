@@ -28,6 +28,10 @@ class ColumnProfile(Frozen):
     ci: dict[str, tuple[float, float]] = Field(default_factory=dict)
     # 2-fold cross-validated single-feature score (see stats.single_feature_score)
     association: float | None = None
+    # the same predictor scored threshold-free (Gini for classification): where the signal is, not a leak screen
+    signal: float | None = None
+    # how values go missing: target relation, structural pattern, related features (see profiling.missingness)
+    missingness: dict[str, Any] = Field(default_factory=dict)
 
 
 class TargetProfile(Frozen):
@@ -66,6 +70,9 @@ class Relations(Frozen):
         "2-fold cross-validated single-feature score on the development rows: rank nearest-neighbours "
         "(numeric) or a category lookup table, fit on one half and scored on the other, then swapped "
         "(R^2 for regression, chance-rescaled balanced accuracy for classification)")
+    signal_method: str = (
+        "the same 2-fold single-feature predictor, scored threshold-free: R^2 for regression, Gini = 2 AUC - 1 "
+        "(one-vs-rest, averaged over classes) for classification")
     corr_method: str = "Spearman rank correlation"
     corr_columns: tuple[str, ...] = ()
     corr_matrix: tuple[tuple[float | None, ...], ...] = ()
@@ -90,6 +97,13 @@ class DataProfile(Frozen):
     def __repr__(self) -> str:
         return (f"<DataProfile {self.task.value}: {self.dataset.n_rows} dev rows, "
                 f"{self.dataset.n_features} features>")
+
+    @property
+    def task_needs_answer(self) -> bool:
+        """The task was inferred and the inference could go either way (an integer target
+        with few distinct values: labels or a score?). A text, boolean, binary or
+        continuous target leaves no doubt, so nobody is asked."""
+        return self.task_inferred and bool(self.target.task_evidence.get("ambiguous"))
 
     @property
     def feature_columns(self) -> list[str]:

@@ -104,6 +104,7 @@ def analyze(
     llm: Any = None,
     seed: int = 0,
     profile_options: ProfileOptions | None = None,
+    keep_data: bool = True,
 ) -> Report:
     """Profile a dataset and produce an evidence-backed decision roadmap.
 
@@ -133,7 +134,23 @@ def analyze(
     budget : experiment limits (see `prefit.Budget`).
     llm : optional `prefit.LLMConfig` (or a provider name / Provider). Off by
         default; see `Report.llm_payload()` for exactly what would be sent.
+    keep_data : keep a reference to `df` (no copy) so `verify()`, `holdout()`,
+        `change_task()`, `answer(task=...)`, `export().fit()` and `review(model)`
+        need no frame. It is fingerprint-checked on every use (an in-place edit
+        raises) and never serialized. False keeps no reference.
     """
+    return _analyze(df, target, task=task, estimator=estimator, groups=groups, time_col=time_col, holdout=holdout,
+                    split_columns_as_features=split_columns_as_features, context=context, answers=answers,
+                    verify=verify, budget=budget, llm=llm, seed=seed, profile_options=profile_options,
+                    keep_data=keep_data)
+
+
+def _analyze(df: pd.DataFrame, target: str, *, task: Task | str | None, estimator: Any, groups: Any,
+             time_col: str | None, holdout: float | None, split_columns_as_features: bool, context: str | None,
+             answers: dict[str, str] | None, verify: bool, budget: Budget | None, llm: Any, seed: int,
+             profile_options: ProfileOptions | None, keep_data: bool, fixed_holdout: Any = None,
+             session: dict | None = None) -> Report:
+    """analyze(); `fixed_holdout` = (dev_pos, hold_pos, info) reuses a partition (change_task)."""
     options = profile_options or ProfileOptions()
     budget = budget or Budget()
     groups_s = validate_inputs(df, target, groups, time_col)
@@ -149,7 +166,10 @@ def analyze(
     if task_t is Task.UNKNOWN:
         raise ValueError("Could not infer the task from the target; pass task='classification' or 'regression'.")
 
-    dev_pos, hold_pos, hold_info = reserve_holdout(df, target, task_t, holdout, groups_s, time_col, seed)
+    if fixed_holdout is not None:
+        dev_pos, hold_pos, hold_info = fixed_holdout
+    else:
+        dev_pos, hold_pos, hold_info = reserve_holdout(df, target, task_t, holdout, groups_s, time_col, seed)
     dev = df.iloc[dev_pos]
     roles: dict[str, str] = {}
     if not split_columns_as_features:
@@ -184,6 +204,8 @@ def analyze(
     report._holdout_positions = hold_pos
     report._estimator = estimator
     report._row_hashes = row_hashes(df)
+    report._data = df if keep_data else None
+    report._session = session if session is not None else {"test_reviews": {}}
     if verify:
         report = _verify(report, df, estimator=estimator, budget=budget, groups=groups)
     if llm is not None:
@@ -291,7 +313,20 @@ def _carry(report: Report, new: Report, estimator: Any = None) -> Report:
     new._holdout_positions = report._holdout_positions
     new._estimator = report._estimator if estimator is None else estimator
     new._row_hashes = report._row_hashes
+    new._data = report._data
+    new._session = report._session if report._session is not None else {"test_reviews": {}}
     return new
+
+
+def _frame(report: Report, df: Any, where: str) -> pd.DataFrame:
+    """The development frame: `df` when given, else the one kept in memory; fingerprint-checked."""
+    if df is None:
+        df = report._data
+        if df is None:
+            raise ValueError(f"{where} needs the DataFrame passed to analyze: this report keeps none (it was loaded "
+                             f"from JSON or built with keep_data=False). Pass it: {where}(df).")
+    check_fingerprint(df, report.details.manifest.source_fingerprint, report.target, where, report._row_hashes)
+    return df
 
 
 def _apply_experiments(out: RuleOutput, experiments, notes: dict[str, str], prev: dict[str, Any]) -> None:
@@ -374,10 +409,10 @@ def _resolve(report: Report, decision_id: str, note: str) -> Report:
     return _rederive(report, ctx_state=ctx_state, manifest=manifest, estimator=report._estimator)
 
 
-def _change_task(report: Report, df: pd.DataFrame, task: Task | str) -> Report:
+def _change_task(report: Report, df: Any, task: Task | str) -> Report:
     new_task = Task(getattr(task, "value", task))
     m = report.details.manifest
-    check_fingerprint(df, m.source_fingerprint, report.target, "report.change_task", report._row_hashes)
+    df = _frame(report, df, "report.change_task")
     ctx = report.details.context
     if ctx.groups == "<array>":
         raise ValueError("This report was built with a groups array, which is not stored; re-run "
@@ -387,7 +422,14 @@ def _change_task(report: Report, df: pd.DataFrame, task: Task | str) -> Report:
         task=new_task, estimator=report._estimator, groups=ctx.groups, time_col=ctx.time_col,
         holdout=first.get("holdout"), split_columns_as_features=ctx.split_columns_as_features, context=ctx.text,
         budget=Budget(**(m.budget or {})), seed=m.seed, profile_options=ProfileOptions(**m.profile_options))
-    fresh = analyze(df, report.target, **common)
+    # the same holdout rows: they were set aside under the old task and must stay unread
+    hold = _holdout_positions(report, df)
+    mask = np.zeros(len(df), dtype=bool)
+    mask[hold] = True
+    fixed = (np.flatnonzero(~mask), np.flatnonzero(mask), dict(report.details.profile.holdout))
+    fresh = _analyze(df, report.target, split_columns_as_features=common.pop("split_columns_as_features"),
+                     answers=None, verify=False, llm=None, keep_data=report._data is not None, fixed_holdout=fixed,
+                     session=report._session, **common)
     qs = {q.id: {o.value for o in q.options} for q in fresh.questions}
     kept = {k: v for k, v in ctx.answers.items() if k != "q.task" and v in qs.get(k, set())}
     dropped = sorted(set(ctx.answers) - set(kept) - {"q.task"})
@@ -403,15 +445,83 @@ def _change_task(report: Report, df: pd.DataFrame, task: Task | str) -> Report:
                      baseline={}, notes={})
 
 
-def _apply_answers(report: Report, answers: dict[str, str]) -> Report:
-    answers = _normalize_answers(answers)
-    q_task = answers.get("q.task")
-    if q_task is not None and q_task != report.task.value:
-        raise ValueError(f"You answered that the task is {q_task}: use report.change_task(df, '{q_task}'), which "
-                         "re-runs the analysis and keeps your answers, review notes and registered holdout.")
+def _option_value(q: Any, v: Any) -> str:
+    """An answer -> the option value: the value itself, an alias ("mae"), or True/False for column questions."""
+    if isinstance(v, (bool, np.bool_)):
+        for o in q.options:
+            if o.flag is bool(v):
+                return o.value
+        raise ValueError(f"{q.id} ({q.text}) takes one of {[o.value for o in q.options]}, not {v!r}.")
+    text = str(getattr(v, "value", v))
+    for o in q.options:
+        if text == o.value or text.lower() in {a.lower() for a in o.aliases}:
+            return o.value
+    opts = ", ".join(o.value + (f" ({'/'.join(o.aliases)})" if o.aliases else "") for o in q.options)
+    raise ValueError(f"{text!r} is not an answer to {q.id} ({q.text}). Options: {opts}.")
+
+
+def _keywords(report: Report) -> list[str]:
+    return sorted({q.keyword for q in report.questions if q.keyword} | {"task"})
+
+
+def _resolve_keywords(report: Report, answers: dict[str, Any], by_keyword: dict[str, Any]) -> dict[str, str]:
+    """{question id: option value} from question-id answers and keyword answers."""
+    out: dict[str, str] = {}
+    qs = {q.id: q for q in report.questions}
+    for raw, v in answers.items():
+        k = raw if raw.startswith("q.") else f"q.{raw}"
+        q = qs.get(k)
+        out[k] = _option_value(q, v) if q is not None else str(v)
+    for kw, val in by_keyword.items():
+        if kw == "task":
+            if "q.task" in qs:
+                out["q.task"] = _option_value(qs["q.task"], val)
+            continue
+        matches = [q for q in report.questions if q.keyword == kw or q.id == f"q.{kw}"]
+        if not matches:
+            raise KeyError(f"Unknown answer keyword {kw!r}. This report takes: {', '.join(_keywords(report))}. "
+                           "Review items are closed with report.resolve(decision_id, note), not answered.")
+        by_col = {q.column: q for q in matches if q.column is not None}
+        if not by_col:
+            out[matches[0].id] = _option_value(matches[0], val)
+            continue
+        items = (val.items() if isinstance(val, dict)
+                 else [(c, True) for c in ([val] if isinstance(val, str) else val)])
+        for col, v in items:
+            if col not in by_col:
+                raise KeyError(f"{kw}: no open question about column {col!r}; there are questions about "
+                               f"{sorted(by_col)}.")
+            out[by_col[col].id] = _option_value(by_col[col], v)
+    return out
+
+
+def _apply_answers(report: Report, answers: dict[str, Any], by_keyword: dict[str, Any] | None = None) -> Report:
+    by_keyword = dict(by_keyword or {})
+    answers = dict(answers)
+    new_task = by_keyword.pop("task", None)
+    for k in ("task", "q.task"):
+        if k in answers and new_task is None:
+            new_task = answers.pop(k)
+    if new_task is not None:
+        t = Task(getattr(new_task, "value", new_task))
+        if t is not report.task:
+            # a different task re-runs the analysis (same frame, same holdout), then the other answers apply
+            try:
+                report = _change_task(report, None, t)
+            except ValueError as exc:
+                if report._data is not None:
+                    raise
+                raise ValueError(f"answer(task={t.value!r}) re-runs the analysis and needs the frame passed to "
+                                 f"analyze; this report keeps none. Use report.change_task({t.value!r}, df), then "
+                                 "answer the rest.") from exc
+            if not answers and not by_keyword:
+                return report
+        else:
+            by_keyword["task"] = t.value
+    resolved = _resolve_keywords(report, answers, by_keyword)
     ctx = report.details.context
-    ctx_state = evolve(ctx, answers={**ctx.answers, **answers})
-    manifest = _next_revision(report.details.manifest, "answer", answers=answers)
+    ctx_state = evolve(ctx, answers={**ctx.answers, **resolved})
+    manifest = _next_revision(report.details.manifest, "answer", answers=resolved)
     return _rederive(report, ctx_state=ctx_state, manifest=manifest, estimator=report._estimator)
 
 
@@ -427,14 +537,14 @@ def _holdout_positions(report: Report, df: pd.DataFrame) -> np.ndarray:
         raise ValueError("This report was built with a groups array; holdout positions cannot be re-derived "
                          "after loading. Re-run pf.analyze.")
     g = df[ctx.groups] if ctx.groups else None
-    _, hold, _ = reserve_holdout(df, report.target, report.task, h["fraction"], g, ctx.time_col,
+    reserved_as = Task(h.get("task", report.task.value))
+    _, hold, _ = reserve_holdout(df, report.target, reserved_as, h["fraction"], g, ctx.time_col,
                                  report.details.manifest.seed)
     return hold
 
 
-def _holdout(report: Report, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    m = report.details.manifest
-    check_fingerprint(df, m.source_fingerprint, report.target, "report.holdout", report._row_hashes)
+def _holdout(report: Report, df: Any) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df = _frame(report, df, "report.holdout")
     if not report.details.profile.holdout.get("used"):
         raise ValueError("This report has no internal holdout (analyze ran with holdout=None). If you split with "
                          "pf.split, your test frame is already separate; record it with "
@@ -443,6 +553,54 @@ def _holdout(report: Report, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     mask = np.zeros(len(df), dtype=bool)
     mask[hold] = True
     return df.iloc[~mask], df.iloc[mask]
+
+
+def _review_model(report: Report, model: Any, test_df: Any, *, segments: Any, n_bootstrap: int,
+                  seed: int) -> Any:
+    from .posttrain import review as _review
+
+    if test_df is None:
+        if not report.details.profile.holdout.get("used"):
+            ext = report.details.manifest.external_holdout
+            hint = (f"pass the {ext['name']} you registered: report.review(model, test_df)" if ext else
+                    "pass your test frame: report.review(model, test_df), or analyze with holdout=0.2")
+            raise ValueError(f"This report has no internal holdout; {hint}.")
+        _, test_df = _holdout(report, None)
+        which = "internal holdout"
+    else:
+        if not isinstance(test_df, pd.DataFrame):
+            raise TypeError("test_df must be a pandas DataFrame.")
+        ext = report.details.manifest.external_holdout
+        digest = fingerprint(test_df, report.target)["content_digest"]
+        if ext and ext.get("content_digest") != digest:
+            warnings.warn(f"test_df is not the {ext['name']} registered with this report (its content digest "
+                          "differs).", stacklevel=3)
+        which = digest
+    uses = report._session.setdefault("test_reviews", {}) if report._session is not None else {}
+    uses[which] = uses.get(which, 0) + 1
+    if uses[which] > 1:
+        warnings.warn(f"This test data has been reviewed {uses[which]} times in this session. A test set you "
+                      "look at more than once (to change the model in between) no longer gives an unbiased "
+                      "estimate; report the first review.", stacklevel=3)
+    if report.target not in test_df.columns:
+        raise ValueError(f"test_df has no target column '{report.target}'.")
+    cols = [str(c) for c in getattr(model, "feature_names_in_", [])]
+    if not cols:
+        from .export import export_pipeline
+
+        cols = export_pipeline(report).feature_columns
+    test = test_df[test_df[report.target].notna()]
+    X = test[cols]
+    y_score = None
+    if report.task is Task.CLASSIFICATION and hasattr(model, "predict_proba") and report.metric_plan.positive_label:
+        from .export import positive_label
+
+        classes = list(getattr(model, "classes_", []))
+        pos = positive_label(report.details.profile, report.metric_plan.positive_label)
+        if len(classes) == 2 and pos in classes:
+            y_score = model.predict_proba(X)[:, classes.index(pos)]
+    return _review(test[report.target], model.predict(X), report=report, y_score=y_score, segments=segments,
+                   X=X, n_bootstrap=n_bootstrap, seed=seed)
 
 
 def _register_external_holdout(report: Report, holdout_df: Any, dev_df: Any = None,
@@ -459,6 +617,8 @@ def _register_external_holdout(report: Report, holdout_df: Any, dev_df: Any = No
         "content_digest": fp["content_digest"], "column_schema_digest": fp["column_schema_digest"],
         "profiled": False, "overlap_rows": None,
     }
+    if dev_df is None:
+        dev_df = report._data
     if dev_df is not None:
         check_fingerprint(dev_df, m.source_fingerprint, report.target, "register_external_holdout(dev_df=...)",
                           report._row_hashes)
@@ -477,12 +637,12 @@ def _register_external_holdout(report: Report, holdout_df: Any, dev_df: Any = No
     return _rederive(report, ctx_state=report.details.context, manifest=manifest, estimator=report._estimator)
 
 
-def _verify(report: Report, df: pd.DataFrame, estimator: Any = None, budget: Budget | None = None,
+def _verify(report: Report, df: Any, estimator: Any = None, budget: Budget | None = None,
             groups: Any = None) -> Report:
     from .verify import run_verification
 
     m = report.details.manifest
-    check_fingerprint(df, m.source_fingerprint, report.target, "report.verify", report._row_hashes)
+    df = _frame(report, df, "report.verify")
     budget = budget or _budget_of(report)
     estimator = estimator if estimator is not None else report._estimator
     hold = _holdout_positions(report, df)

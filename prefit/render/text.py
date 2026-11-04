@@ -17,8 +17,9 @@ from .common import (
     fmt,
     headline,
     key_evidence,
-    next_step,
+    next_lines,
     partition_note,
+    state_line,
     status_word,
     task_dependence_note,
 )
@@ -28,7 +29,10 @@ def render_text(report: Any, md: bool) -> str:
     H = (lambda t: f"## {t}") if md else (lambda t: t.upper())
     B = (lambda t: f"**{t}**") if md else (lambda t: t)
     lines = ["# prefit report" if md else "PREFIT REPORT", "", headline(report), "",
-             "Data partition: " + partition_note(report), "", B("Next step: ") + next_step(report), ""]
+             B("Status: ") + state_line(report) + " (done / needs you / tested; details: report.decisions_table())",
+             "", "Data partition: " + partition_note(report), "", B("Run next:")]
+    code = next_lines(report)
+    lines += (["```python", *code, "```"] if md else [f"    {c}" for c in code]) + [""]
 
     att = attention(report)
     if att:
@@ -44,7 +48,6 @@ def render_text(report: Any, md: bool) -> str:
             lines.append(f"- {q.id[2:]}: {q.text}  [{opts}]")
             if q.suggestion:
                 lines.append(f"    suggestion awaiting your confirmation (LLM): {q.suggestion} — {q.suggestion_reason}")
-        lines.append('  answer with: report = report.answer({"<question>": "<option>"})')
         lines.append("")
 
     lines.append(H("Roadmap"))
@@ -62,6 +65,8 @@ def render_text(report: Any, md: bool) -> str:
             ex = experiment_summary(report, d)
             if ex:
                 lines.append(f"    experiment: {ex}")
+            for alt in d.alternatives:
+                lines.append(f"    or:  {alt}")
             if d.note:
                 lines.append(f"    note: {d.note}")
             if d.review_note:

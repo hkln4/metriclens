@@ -2,14 +2,14 @@
 
     python examples/quickstart.py
 
-1. split:    set the test data aside before anything is computed
-2. analyze:  profile the development data, derive decisions
-3. answer:   give the context only you know (which errors matter)
-4. verify:   bounded experiments for the conditional decisions, with YOUR model
-5. register: record the test set in the report (metadata only)
-6. export:   a model recipe holding only applied / confirmed / verified steps
-7. review:   score once on the untouched test set and check the assumptions
-Writes examples/output/california_report.html.
+1. analyze:  set a holdout aside first, profile the rest, derive decisions
+2. answer:   the context only you know (which errors matter), by keyword
+3. verify:   bounded experiments for the conditional decisions, with YOUR model
+4. export:   a model recipe holding only applied / confirmed / verified steps; fit it
+5. review:   score once on the untouched holdout and check the assumptions
+
+The report keeps a reference to the frame (fingerprint-checked on every use), so
+no step needs the DataFrame again. Writes examples/output/california_report.html.
 """
 from __future__ import annotations
 
@@ -21,34 +21,27 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 import prefit as pf
 
 OUT = Path(__file__).parent / "output"
-TARGET = "MedHouseVal"
 
 
 def main() -> None:
     df = fetch_california_housing(as_frame=True).frame
     model = HistGradientBoostingRegressor(random_state=0)
 
-    dev_df, test_df = pf.split(df, TARGET, test_size=0.2, strategy="random", random_state=0)
-
-    report = pf.analyze(dev_df, target=TARGET, estimator=model,
+    report = pf.analyze(df, "MedHouseVal", estimator=model, holdout=0.2,
                         context="house-price estimates used to prioritise field appraisals")
-    print(report)                                            # roadmap + open questions
+    print(report)                                         # status, the lines to run next, the roadmap
 
-    report = report.answer({"task": "regression", "metric_priority": "typical_error"})
-    report = report.verify(dev_df, budget=pf.Budget(max_experiments=4))
-    report = report.register_external_holdout(test_df, dev_df=dev_df, name="test set")
+    report = report.answer(task="regression", metric="mae").verify(budget=pf.Budget(max_experiments=4))
+    print(report.export().describe())                     # what is in the recipe, what is out, and why
 
-    built = report.export()
-    print(built.describe())
-
-    fitted = built.model.fit(dev_df[built.feature_columns], dev_df[TARGET])
-    pred = fitted.predict(test_df[built.feature_columns])
-    age = test_df["HouseAge"].gt(30).map({True: "older than 30y", False: "30y or newer"}).rename("house_age")
-    rev = pf.review(test_df[TARGET], pred, report, segments=age)
-    print(rev)
+    fitted = report.export().fit()
+    _, test = report.holdout()
+    age = test["HouseAge"].gt(30).map({True: "older than 30y", False: "30y or newer"}).rename("house_age")
+    review = report.review(fitted, segments=age.reset_index(drop=True))
+    print(review)
 
     OUT.mkdir(exist_ok=True)
-    report.to_html(str(OUT / "california_report.html"), review=rev)
+    report.to_html(str(OUT / "california_report.html"), review=review)
     print(f"wrote {OUT / 'california_report.html'}")
 
 

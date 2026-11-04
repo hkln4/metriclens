@@ -1,9 +1,16 @@
+import os
 import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import pytest
+# under pytest-xdist every worker gets one thread for OpenMP/BLAS, so N workers do not
+# start N x cores threads (HistGradientBoosting uses every core by default)
+if os.environ.get("PYTEST_XDIST_WORKER"):
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(var, "1")
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+import pytest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks"))

@@ -37,10 +37,13 @@ def test_unknown_question_and_option(messy_df):
         rep.answer({"metric_priority": "whatever"})
 
 
-def test_changing_the_task_requires_rerun(messy_df):
-    rep = pf.analyze(messy_df, "y")
-    with pytest.raises(ValueError, match="re-run"):
-        rep.answer({"task": "regression"})
+def test_changing_the_task_reruns_on_the_frame_in_memory(reg_df):
+    rep = pf.analyze(reg_df.assign(y=(reg_df.y > reg_df.y.median()).astype(int)), "y")
+    changed = rep.answer({"task": "regression"})
+    assert changed.task.value == "regression" and changed.details.manifest.history[-1]["action"] == "change_task"
+    loaded = pf.load_report(rep.to_json())                  # a report from JSON keeps no frame
+    with pytest.raises(ValueError, match="change_task"):
+        loaded.answer(task="regression")
 
 
 def test_answers_do_not_mutate_original(messy_df):

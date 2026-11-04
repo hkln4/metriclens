@@ -129,26 +129,28 @@ def build_figures(df: pd.DataFrame, p: DataProfile, evidence: dict[str, Evidence
                     table={"columns": ["statistic", "raw", "log1p"],
                            "rows": [["skew", r(pd.Series(v).skew(), 3), r(pd.Series(lv).skew(), 3)]]}))
 
-    # 2. single-feature association -----------------------------------------
-    assoc = sorted(((c, cp.association) for c, cp in p.columns.items() if cp.association is not None),
-                   key=lambda t: -t[1])[:20]
-    if assoc:
-        names = [c for c, _ in assoc][::-1]
-        vals = [a for _, a in assoc][::-1]
-        lay = _layout("2-fold CV single-feature score (0 = no signal, 1 = predicts the target alone)", "",
+    # 2. single-feature signal ------------------------------------------------
+    sig = sorted(((c, cp.signal, cp.association) for c, cp in p.columns.items() if cp.signal is not None),
+                 key=lambda t: -t[1])[:20]
+    if sig:
+        names = [c for c, _, _ in sig][::-1]
+        vals = [s_ for _, s_, _ in sig][::-1]
+        leak = {c for c, _, a in sig if a is not None and a >= 0.90}
+        lay = _layout(("R² of the feature alone" if p.task is Task.REGRESSION else
+                       "Gini = 2 AUC - 1 of the feature alone") + " (2-fold CV; 0 = no signal, 1 = perfect)", "",
                       height=max(220, 26 * len(names) + 70), margin={"l": 140, "r": 16, "t": 16, "b": 48})
-        lay["shapes"] = [_threshold_line(0.95)]
         lay["xaxis"]["range"] = [0, 1.02]
         figs.append(FigureSpec(
             id="fig.association", title="How well each feature predicts the target on its own", priority=15,
-            what="2-fold cross-validated single-feature score per feature (top 20). Dashed line: leakage-hint threshold 0.95.",
-            why="A feature near 1.0 alone is the classic signature of target leakage; the ranking also shows "
-                "where signal is.",
+            what="Single-feature signal per feature (top 20), cross-validated on two halves of the development rows. "
+                 "Red: the stricter leakage screen flagged it (see its evidence).",
+            why="Shows where the signal is; a feature that alone predicts the target almost perfectly is the classic "
+                "signature of target leakage.",
             evidence_ids=[e for e in evidence if e.endswith(".association")],
             plot={"data": [{"type": "bar", "orientation": "h", "x": vals, "y": names,
-                            "marker": {"color": ["var:critical" if a >= 0.95 else "var:series-1" for a in vals]},
+                            "marker": {"color": ["var:critical" if c in leak else "var:series-1" for c in names]},
                             "hovertemplate": "%{y}: %{x:.3f}<extra></extra>"}], "layout": lay},
-            table={"columns": ["feature", "score"], "rows": [[c, a] for c, a in assoc]}))
+            table={"columns": ["feature", "signal", "leak score"], "rows": [[c, s_, a] for c, s_, a in sig]}))
 
     # 3. missingness ---------------------------------------------------------
     miss = p.dataset.missing_columns[:30]
@@ -239,6 +241,59 @@ def build_figures(df: pd.DataFrame, p: DataProfile, evidence: dict[str, Evidence
                   "layout": _layout("category rank", "rows (log scale)",
                                     yaxis={"type": "log", "gridcolor": "var:grid", "title": {"text": "rows (log)"}})},
             table={"columns": ["rank", "rows"], "rows": [[i + 1, int(x)] for i, x in enumerate(vc[:50])]}))
+
+    # 7. missing vs present rows: the target on each side ---------------------
+    dec_ids = {d.id for d in decisions}
+    for c, cp in p.columns.items():
+        t = cp.missingness.get("target")
+        owners = [x for x in (f"d.missing_signal.{c}", f"d.fill_zero.{c}") if x in dec_ids]
+        if not t or not owners:
+            continue
+        what = (f"share of class '{t['class']}'" if t["kind"] == "class_share" else "mean target")
+        n_m = cp.missingness["n_missing"]
+        figs.append(FigureSpec(
+            id=f"fig.missing_target.{c}", title=f"Target where '{c}' is missing vs present", priority=22,
+            what=f"The {what} in the {n_m} rows where '{c}' is missing and in the other rows "
+                 f"(permutation p = {t['p_value']:.3f}).",
+            why="If the target differs where a value is missing, the missingness itself carries signal: keep the "
+                "indicator, or check that it is not a leak.",
+            evidence_ids=has(f"ev.col.{c}.missing_target"), decision_ids=owners,
+            plot={"data": [{"type": "bar", "x": [f"missing (n={n_m})", "present"], "y": [t["missing"], t["observed"]],
+                            "marker": {"color": ["var:series-2", "var:series-1"]},
+                            "hovertemplate": "%{x}: %{y:.4g}<extra></extra>"}],
+                  "layout": _layout("", what, height=260)},
+            table={"columns": ["rows", what, "p (permutation)"],
+                   "rows": [[f"'{c}' missing ({n_m})", t["missing"], t["p_value"]],
+                            [f"'{c}' present", t["observed"], ""]]}))
+
+    # 8. how far each copy sits from its original in the file ---------------
+    adj = p.dataset.duplicate_adjacency
+    if p.dataset.duplicate_rows and adj:
+        cols = [c for c in df.columns if c not in p.roles]
+        h = pd.util.hash_pandas_object(df[cols], index=False).to_numpy()
+        first = pd.Series(np.arange(len(h))).groupby(h).transform("min").to_numpy()
+        gaps = (np.arange(len(h)) - first)[pd.Series(h).duplicated().to_numpy()]
+        if len(gaps):
+            lg = np.log10(gaps.astype(float))
+            centers, counts, width = _hist(lg, bins=30)
+            lay = _layout("rows between a copy and its first occurrence (log10)", "copies")
+            lay["shapes"] = [_threshold_line(float(np.log10(max(adj["random_median_gap"], 1))))]
+            figs.append(FigureSpec(
+                id="fig.duplicate_gaps", title="How far copies sit from their originals", priority=24,
+                what=f"Row distance from each extra copy to its first occurrence (log scale). Dashed line: the median "
+                     f"distance if the rows were in random order ({adj['random_median_gap']:g}); observed median "
+                     f"{adj['median_gap']:g} (permutation p = {adj['p_value']:.3f}).",
+                why="Copies a few rows apart point to the same record entered twice; copies spread like random rows "
+                    "give no hint from the order.",
+                evidence_ids=has("ev.dataset.duplicate_adjacency"), decision_ids=["d.duplicate_rows"],
+                plot={"data": [{"type": "bar", "x": centers, "y": counts, "width": width * 0.92,
+                                "customdata": [r(10 ** c, 4) for c in centers], "marker": {"color": "var:series-1"},
+                                "hovertemplate": "~%{customdata:.3g} rows apart: %{y} copies<extra></extra>"}],
+                      "layout": lay},
+                table={"columns": ["statistic", "rows apart"],
+                       "rows": [["observed median", adj["median_gap"]], ["random-order median", adj["random_median_gap"]],
+                                ["closest copy", int(gaps.min())], ["farthest copy", int(gaps.max())],
+                                ["permutation p", adj["p_value"]]]}))
 
     _link(figs, evidence, decisions)
     return sorted(figs, key=lambda f: (f.priority, f.id))

@@ -1,353 +1,281 @@
 # prefit
 
-**Decision-driven EDA for tabular supervised learning.**
+**Decision-driven EDA for tabular supervised learning.** Point it at your data before you train; it tells you
+what to decide, shows the evidence, tests what can be tested with your model, and keeps the test set honest.
 
-Point `prefit` at your development data before you train. It profiles the
-data, turns what it measures into a short list of *decisions* — how to split,
-which columns to question, what to preprocess, which metric to trust — and shows
-the evidence, threshold and uncertainty behind every one. Decisions that depend
-on your data and model are tested with small, bounded experiments instead of
-being assumed. At the end you get a scikit-learn model recipe that contains only
-steps that are safe, that you confirmed, or that an experiment supported.
+```python
+import pandas as pd, prefit as pf
+from sklearn.ensemble import HistGradientBoostingRegressor
 
-It is not AutoML: it does not choose a model or tune hyperparameters, and it
-never applies an unconfirmed assumption silently.
+df = pd.read_csv("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv", sep=";")
 
-**[Example report](https://hkln4.github.io/prefit/report.html)** ·
-[Project page](https://hkln4.github.io/prefit/) · [PyPI](https://pypi.org/project/prefit/)
-
-```bash
-pip install "prefit[verify]"        # core + experiments/export (scikit-learn, scipy)
-pip install "prefit[verify,report]" # + plotly, for fully offline HTML reports
-pip install "prefit[llm]"           # optional LLM interpretation (Anthropic)
+report = pf.analyze(df, "quality", estimator=HistGradientBoostingRegressor(), holdout=0.2)
+report = report.answer(task="regression", metric="mae").verify()
+fitted = report.export().fit()
+review = report.review(fitted)
 ```
 
-The core (`pandas`, `numpy`, `pydantic`) profiles, decides and renders reports
-with no scikit-learn, no network and no API key.
+What `print(report)` says right after `analyze` (abridged):
+
+```text
+classification (inferred) on 'quality' · 1,277 development rows, 11 features · 2 question(s) open
+
+Status: ! 4 needs you · ⚗ 0 tested · ✓ 5 done
+
+Data partition: ... The internal holdout (322 rows, stratified random 20%; exact duplicates kept on one side)
+was set aside before profiling and was never read ... 220 set(s) of exact duplicate rows were kept whole.
+
+Run next:
+    report = report.answer(task="classification")  # or "regression"
+    report = report.answer(metric="f1_macro")  # or "accuracy"
+    report = report.resolve("d.duplicate_rows", "what you found and decided")
+    report = report.verify()  # test the conditional decisions with your model
+    fitted = report.export().fit()  # the recipe: applied, confirmed and verified steps
+    review = report.review(fitted)  # once, on the internal holdout
+
+QUESTIONS FOR YOU
+- task: Is this a classification task? Ordered scores are usually regression; the data cannot tell.
+```
+
+and what `print(review)` says at the end:
+
+```text
+- MAE: 0.5271  [95% CI 0.474, 0.5833]        baseline MAE (predict the median): 0.6646
+- [HELD] The development CV estimate describes the score on the untouched test data.
+    CV MAE 0.5053 lies inside the test interval [0.474, 0.5833]
+- never verified: Decide whether duplicates are the same record or legitimate repeats
+```
+
+```bash
+pip install "prefit[verify]"          # + scikit-learn, scipy: experiments, export, review
+pip install "prefit[verify,report]"   # + plotly: figures in notebooks, fully offline HTML
+```
+
+**[Example report](https://hkln4.github.io/prefit/report.html)** · [Project page](https://hkln4.github.io/prefit/) ·
+[PyPI](https://pypi.org/project/prefit/) · [Changelog](CHANGELOG.md) · [Architecture](ARCHITECTURE.md)
 
 ---
 
-## Quickstart
+## How it thinks
+
+prefit profiles the development rows and turns measurements into **decisions**. Each decision has a class,
+which says how much the data alone can settle it:
+
+| class | what it is | enters the model recipe when |
+|---|---|---|
+| **procedural** | how to evaluate, right for any data: fit preprocessing inside folds, stratify, keep exact duplicates and the holdout on one side | always |
+| **conditional** | may help or hurt depending on data and model: log target, power transform, target encoding, class weights, model-based imputation, dropping mostly-missing columns | an experiment with **your** estimator verifies it |
+| **contextual** | cannot be decided from data: the cost of errors, whether a column exists at prediction time, what a missing value means | you answer the question |
+| **review** | needs a human look: duplicates, missingness that relates to the target, infinite values, raw dates and text | never; it is a to-do |
+
+You see three states: **done** (applied, confirmed, closed), **needs you** (a question, a review item, an
+experiment you have not run) and **tested** (an experiment settled it, in or out of the recipe). Statuses and
+details are in `report.decisions_table()`.
+
+Three principles, used to decide what goes in:
+
+- **A statistic enters the roadmap only if it changes a decision.** Otherwise it stays in the profile (the
+  first-look table, the HTML details). Missing values completely at random raise nothing; missing values that
+  sit exactly where `tenure == 0` become a question.
+- **Recommendations are hypotheses.** Every conditional decision lists its alternatives and when each is right,
+  and how to find out cheaply (usually: `verify`). Thresholds are triggers, not verdicts: a statistic whose
+  interval straddles its threshold is *near threshold* and its decision *uncertain*.
+- **prefit does not choose models.** It measures whether a suggestion helps *your* model. Leakage is only ever a
+  hint ("is this known at prediction time?"); strong genuine features look the same.
+
+## The flow
 
 ```python
-import prefit as pf
-from sklearn.ensemble import HistGradientBoostingRegressor
+report = pf.analyze(df, target, estimator=model, holdout=0.2)   # holdout set aside before anything is computed
+report                                    # notebook card: three states + the lines to run next
+report.show()                             # + first-look table and the figures behind what needs you
+report.show("d.duplicate_rows")           # one decision: why, do, alternatives, evidence, figure
+print(report)                             # the same as text, with the roadmap
 
-model = HistGradientBoostingRegressor(random_state=0)
-
-# 1. set the test data aside before anything is computed
-dev_df, test_df = pf.split(df, target="price", test_size=0.2, strategy="random", random_state=42)
-
-# 2. analyze the development data only
-report = pf.analyze(dev_df, target="price", estimator=model)
-report                                   # notebook: a short summary card with the next step
-print(report)                            # roadmap: one line of why / do per decision
-report.to_html("report.html")            # the full report
-
-# 3. every step returns a new report revision
-report = report.answer({"metric_priority": "typical_error"})
-report = report.verify(dev_df)           # bounded experiments with your model
-report = report.register_external_holdout(test_df, dev_df=dev_df, name="test set")
-
-# 4. export only what is applied, confirmed or verified
-built = report.export()
-print(built.describe())                  # what is in, what is out, and why
-fitted = built.model.fit(dev_df[built.feature_columns], dev_df["price"])
-
-# 5. once, at the end, on the untouched test data
-review = pf.review(test_df["price"], fitted.predict(test_df[built.feature_columns]), report)
+report = report.answer(task="regression", metric="mae")         # keywords; see the table below
+report = report.resolve("d.duplicate_rows", "re-entered records; kept, the split keeps copies together")
+report = report.verify()                  # bounded experiments for the conditional decisions
+built = report.export(); print(built.describe())                 # what is in, what is out, and why
+fitted = built.fit()                      # fit on the development rows (holdout excluded)
+review = report.review(fitted)            # once, on the holdout; a second look warns
 report.to_html("report.html", review=review)
 ```
 
-Shortcut: `pf.analyze(df, target, holdout=0.2)` sets the holdout aside itself,
-before profiling; `dev_df, test_df = report.holdout(df)` gives it back. Without
-`holdout=`, `analyze` never splits — the default is `holdout=None`.
+The report keeps a reference to the frame you analyzed (no copy, never serialized) and checks its fingerprint
+every time it uses it, so an edit after `analyze` raises instead of silently changing results.
+`analyze(..., keep_data=False)` keeps nothing; then pass the frame (`verify(df)`, `holdout(df)`, ...), as you
+must after `pf.load_report(path)`. If you split yourself, `pf.split(df, target)` keeps exact duplicates on one
+side; analyze the development part and pass the test part to `report.review(fitted, test_df)`.
 
-Both `pf.split` (`"stratified"` / `"random"`) and `holdout=` keep exact
-duplicate rows on one side, and the cross-validation prefit chooses keeps them
-in one fold, so a copy never scores its own twin.
+**Answers.** Every open question names its keyword, and `print(report)` writes the line to run.
 
-From the shell:
-
-```bash
-prefit report dev.csv --target price --verify --answer metric_priority=typical_error --out report.html
-```
-
-An example report produced by `examples/quickstart.py` is live at
-[hkln4.github.io/prefit/report.html](https://hkln4.github.io/prefit/report.html) (source:
-[`examples/output/california_report.html`](https://github.com/hkln4/prefit/blob/main/examples/output/california_report.html)).
-
----
-
-## The report object
-
-```python
-# reading
-print(report); report.to_html(path); report.to_markdown()
-report.roadmap; report.pending_questions(); report.decisions_table()
-report.target; report.task
-
-# flow (each returns a new revision; the old report is unchanged)
-report.answer({...}); report.verify(df); report.interpret(llm)
-report.resolve("d.duplicate_rows", "re-entered records; kept")   # close a review item with a note
-report.change_task(df, "regression")     # re-analyze as another task, keeping what still applies
-report.register_external_holdout(test_df, dev_df=dev_df)
-report.export(estimator); report.holdout(df); pf.review(...)
-
-# automation
-report.decisions; report.decision(id); report.questions; report.experiments
-report.metric_plan; report.baseline; report.cv_estimate(); report.to_json(); report.llm_payload()
-
-# internals: the traceability chain and reproducibility record
-report.details.findings / .finding(id) / .evidence / .profile / .figures
-report.details.manifest / .context / .limitations / .rule_track_record / .llm
-```
-
-`report.decisions_table()` is the best place to start in a notebook: one row per
-decision with its status, a one-line why (with the decisive number), what to do,
-any experiment result, and whether it is *standard practice* (fit preprocessing
-in folds, a plain CV, the holdout rule). Standard-practice decisions appear on
-every dataset, so the text and HTML reports group them apart from the findings
-specific to your data.
-
-**Review items can be closed.** `report.resolve(decision_id, note)` records what
-you decided about a review item (status `reviewed`). Nothing in the data or the
-recipe changes; the note is shown in the report, in `export().describe()` and in
-`pf.review`, and the item no longer counts as an open assumption.
-
-**The task can change without starting over.** While the task is only inferred,
-findings and decisions that exist only under it (class imbalance, class weights,
-the metric options) are marked *task-dependent* in the report and in the LLM
-payload. `report.change_task(df, "regression")` re-runs the analysis on the
-same (fingerprint-checked) frame and carries over the answers that still apply,
-review notes, the registered external holdout and the options; experiments are
-dropped because they belonged to the old task.
-
-**Reports are immutable.** Every model is frozen, lists are tuples and dicts are
-read-only, all the way down. `answer`, `verify`, `interpret` and
-`register_external_holdout` return a new report whose
-`details.manifest.revision` is incremented and whose `history` records the step.
-`pf.load_report(path)` reloads a report saved with `to_json`.
-
-**The data is checked, never trusted.** A report stores no rows, so `verify`
-and `holdout` take the DataFrame again. Its fingerprint — SHA-256 digests of the
-column schema, dtypes, index, target and row-order-sensitive content — must
-match the frame passed to `analyze`. A shuffled, edited, shortened or different
-frame (the test set, say) raises an error that says what differs; nothing is
-ever re-split.
-
----
-
-## How decisions are made
-
-Every rule turns *evidence* (a measured value, its 95% interval, the method)
-into a *finding*, and the finding into one or more *decisions*. Each decision has
-a **class**, which says how much the data alone can settle it:
-
-| class | meaning | enters the model recipe when |
+| keyword | question | answers |
 |---|---|---|
-| **procedural** | about *how to evaluate*; correct regardless of the data (fit preprocessing inside folds, stratify, keep split columns and the holdout out). The only column it removes are constant ones. | always |
-| **conditional** | may help or hurt depending on data and model (log target, power transform, target encoding, class weights, dropping mostly-missing columns) | an experiment with **your** estimator verifies it |
-| **contextual** | cannot be decided from data (metric = cost of errors, is a column known at prediction time, is it an identifier, does time order matter) | you answer the question |
-| **review** | needs a human look (duplicates, label conflicts, informative missingness, infinite values, collinearity, raw datetime/text columns v1 cannot encode) | never; it is a to-do |
+| `task` | classification or regression? (asked only when ambiguous, e.g. a 0–10 score) | `"classification"`, `"regression"`; a different task re-runs the analysis on the same rows and the same holdout |
+| `metric` | which error costs more? | regression `"mae"`, `"rmse"`, `"mape"`; binary `"recall"`, `"precision"`, `"balanced_accuracy"`, `"roc_auc"`; multiclass `"f1_macro"`, `"accuracy"` (or the option names) |
+| `known_at_prediction` | is this column known before the target? | `{"col": True/False}` (False drops it) |
+| `identifier` | is this integer column an id? | `{"col": True/False}` or `["col", ...]` |
+| `missing_is_zero` | does a structural blank mean 0? | `{"col": True/False}` |
+| `time_order` | must the model predict the future from the past? | `True/False` |
 
-Ground rules the catalog follows:
+The dict form with question ids (`answer({"metric_priority": "typical_error"})`) works too.
 
-- **Thresholds are triggers, not verdicts.** Threshold-relevant statistics carry
-  a bootstrap or Wilson interval (bootstrap intervals are computed for the full
-  sample size even when resamples are subsampled); when the interval straddles
-  the threshold the finding is *near threshold* and its decision *uncertain*.
-- **Leakage is only ever a hint.** A feature that alone predicts the target in a
-  2-fold cross-validated single-feature score raises a "single-feature
-  predictive leakage hint — manual review required" and a question ("is this
-  known at prediction time?"). Genuinely strong features look the same, so
-  nothing is dropped until you answer.
-- **Unsupported is not uninformative.** Raw datetimes, free text and string
-  identifiers are left out of the exported features because v1 has no encoder
-  for them; they are reported as a review item, never as "carries no signal".
-- **No group splitting without real groups.** ID-like columns and duplicates
-  produce review items. Group-aware splitters are used only with `groups=`;
-  `TimeSeriesSplit` only with `time_col=`. Both columns stay out of the features
-  unless `split_columns_as_features=True` (which adds a warning). The one
-  exception: exact duplicate rows (all columns, target included) are always
-  kept together — on one side of the holdout and in one CV fold
-  (`pf.DuplicateAwareKFold`, which hashes the rows itself, so no `groups=` is
-  needed and repeated k-fold stays repeated). No row is removed; whether the
-  copies are the same record or legitimate repeats stays a review item. With
-  `groups=` your groups take precedence (a warning names copies that span
-  groups).
-- **Split precedence is explicit.** `time_col` turns off class stratification
-  (the report says so); `groups` with classification uses
-  `StratifiedGroupKFold`, which balances classes only approximately; `groups`
-  and `time_col` together raise an error in v1.
-- **The data you analyze is the data the report describes.** The report opens
-  with a data-partition note: which rows were analyzed, whether an internal or
-  registered external holdout exists, and that it was never read.
+## Missing values
+
+For every column with at least five missing rows, prefit measures how the values go missing:
+
+- **the target where values are missing vs present** (minority-class share or mean, a seeded permutation test,
+  Holm across columns) and the single-feature score of the missing indicator;
+- **structural gaps**: missing exactly where another column takes one value (Telco: `TotalCharges` is blank in
+  exactly the 11 rows with `tenure == 0`);
+- **related features**: which feature best separates missing from observed rows (missing at random given it),
+  and how well other features predict the column.
+
+These become three kinds of decision: a **question** for a structural gap ("does missing mean 0 there?"; yes
+fills the constant inside the Pipeline), a **review item** when missingness relates to the target, with the
+rates ("where 'lab' is missing, class '1' is 85% of rows; where it is present, 42% (permutation p = 0.002)",
+from the `informative_missing` benchmark case), and a
+**conditional** decision to test model-based imputation (IterativeImputer) against the median when other
+features predict the column. Numbers stored as text are read as numbers, with blanks and placeholders (`""`,
+`"NA"`, `"?"`, ...) as missing values.
 
 ## Experiments, and what they can claim
 
-`verify` tests each conditional decision once per model family as "current
-setup" vs. "current setup + this one change", on identical folds. The folds come
-from the same splitter as the export CV decision (repeated when it is a plain
-k-fold, for power); baselines use the same folds. A `Budget` caps the number of
-experiments, wall-clock time and rows.
+`verify` tests each conditional decision once per model family as "current setup" vs "current setup + this one
+change", on identical folds from the same splitter as the exported CV (repeated for power). `Budget` caps
+experiments, time and rows; folds run in parallel automatically once one cross-validation takes over 2 s.
 
 | protocol | when | test |
 |---|---|---|
-| `repeated_kfold` | default | corrected repeated k-fold t-test (Nadeau & Bengio 2003; Bouckaert & Frank 2004), Holm across the run |
-| `grouped_kfold` | `groups=` | same correction on a single grouped k-fold run (low power, said in the report) |
-| `time_series` | `time_col=` | none — expanding windows are not exchangeable; per-fold differences only, outcome left to you |
+| `repeated_kfold` | default | corrected repeated k-fold t-test (Nadeau & Bengio 2003), Holm across the run |
+| `grouped_kfold` | `groups=` | same correction on one grouped k-fold run (low power, said in the report) |
+| `time_series` | `time_col=` | none: expanding windows are not exchangeable; per-fold differences only |
 
-An experiment counts as **improved** only with the right direction, a
-significant Holm-adjusted p-value, *and* a mean difference of at least the
-practical threshold (`Budget(min_relative_effect=0.01)` = 1% of the baseline
-score, or an absolute `min_effect`). Significant but smaller differences are
-**negligible**. Absence of an effect needs its own evidence: an equivalence test
-(TOST against ±the practical threshold, same corrected standard error, Holm)
-gives **no practical effect**; without it a non-significant result stays
-**inconclusive** (the folds were too noisy to tell). Changes are shown in natural
-units (errors as errors, "lower = better"); per-fold changes are in the report.
+**Improved** needs the right direction, a significant Holm-adjusted p-value *and* a change of at least the
+practical threshold (`Budget(min_relative_effect=0.01)`). **No practical effect** needs a passed equivalence test
+(TOST); otherwise a non-significant result is **inconclusive**. With your estimator an improvement *verifies*
+the decision; without one, a linear and a tree proxy give a sensitivity analysis that is not exported by
+default. All of it is development evidence: the generalization claim comes from the holdout.
 
-- With `estimator=`, an improvement makes the decision **verified** (and
-  exportable); a practical-size loss makes it **refuted**.
-- Without it, a linear and a tree proxy are used. Their results are a
-  **sensitivity analysis** (`supported_by_proxy`), not a verdict on your model,
-  and are excluded from export unless you pass
-  `export(include_proxy_supported=True)`. When one family gains and the other
-  loses, the decision is marked model-family dependent.
-- All of it is **development evidence**. The generalization claim comes from the
-  untouched test data (or nested CV when you have none).
+## After training
 
-## Export
+`report.review(fitted)` (or `pf.review(y_true, y_pred, report, y_score=..., X=...)`) checks the roadmap's
+hypotheses against the real errors, each against an explicit reference, with seeded 95% bootstrap intervals
+on the headline metrics (ROC-AUC and PR-AUC included; exact duplicates are resampled together), residual /
+confusion / precision–recall / segment views, and the list of assumptions that were never verified.
 
-`report.export(estimator, scale=True)` returns:
+It also checks that the development CV estimate lies inside the test interval. **This check has a limit:**
+leakage that inflates the CV and the test score alike (a leaked feature present in both, near-duplicates on
+both sides of the split) moves both together and passes it. It detects a mismatch between development and test
+data, not leakage. On Red Wine Quality a plain flow passes it too, while about a fifth of its test rows have an
+exact copy in its training rows.
 
-- `model` — the full recipe for `fit` / `cross_validate`: `Pipeline(preprocess,
-  estimator)`, wrapped in a `TransformedTargetRegressor` when a target transform
-  was verified (`built.model_kind` says which). `None` without an estimator.
-- `preprocessor` — the feature preprocessing alone. Feature scaling is an
-  estimator-dependent default (`scale=False` turns it off), not a decision.
-- `cv`, `scoring`, `feature_columns`, `groups`, `sort_by`. When the data has
-  exact duplicates, `cv` is a `DuplicateAwareKFold` (a scikit-learn-compatible
-  splitter: `cross_validate(model, X, y, cv=built.cv)` needs no `groups=`).
-- `included`, `excluded` (with status and reason), `needs_estimator` (eligible
-  estimator-level steps that need an estimator), `unsupported` (columns left
-  out), `assumptions` still open.
+## Does it work?
+
+**On real data** (`python benchmarks/real_data.py`, results in
+[`benchmarks/results/real_data.md`](benchmarks/results/real_data.md)): a plain flow (`train_test_split`, KFold)
+and the prefit flow run on the same data with the same estimator; a final set E that neither flow sees, with no
+exact copy of its rows elsewhere, scores both models. *Optimism* is how much better a flow's estimate looks than
+its score on E (positive = optimistic).
+
+| dataset (seeds) | metric | CV optimism: plain → prefit | own-test optimism: plain → prefit | score on E: plain / prefit |
+|---|---|---|---|---|
+| wine_red (10) | MAE | +0.047 → -0.012 | +0.067 → -0.001 | 0.505 / 0.511 |
+| breast_cancer (10) | bal. acc. | -0.000 → +0.009 | +0.021 → +0.000 | 0.952 / 0.947 |
+| telco (5) | ROC-AUC | -0.010 → -0.013 | -0.010 → -0.004 | 0.838 / 0.839 |
+| california (3) | MAE | -0.002 → -0.000 | +0.006 → +0.001 | 0.316 / 0.313 |
+| adult (3) | bal. acc. | -0.003 → -0.007 | -0.001 → -0.001 | 0.796 / 0.847 |
+
+Wine is the dataset with a hazard: 22% of the plain flow's test rows have an exact copy in its training rows, and
+both its CV and its own test score look about 0.05–0.07 MAE better than the model is. prefit's estimates are
+within noise of the truth. The price is visible too: keeping copies on one side leaves fewer distinct training
+rows (818 vs 848), and prefit's model scores 0.006 MAE worse on E. On Breast Cancer, Telco and California there is
+nothing to fix, and both flows report honestly and score alike. On Adult, `verify` found that class weights help
+the user's model (3/3 seeds), so prefit's model scores higher on E; its CV estimate is for that recipe (an early
+0.4 build reported the base setup's CV here, 0.05 too low; the benchmark caught it). The run takes about 15
+minutes; standard deviations are in the results file.
+
+**Detection** (`python benchmarks/run.py`): versioned fixture cases with one injected hazard each, plus datasets
+bundled with scikit-learn. Manifest `2026.11-4`: 26/26 cases pass, including a check that no exact duplicate
+lands on both sides of the holdout or any CV fold. This is a detection pass rate on known hazards, not a claim
+about real-world accuracy. CI fails when the committed results come from other rule versions.
+
+**Case studies** (`python examples/case_studies.py`; fixed seeds; the Wine row is from the real-data benchmark):
+
+| study | rule | before | after |
+|---|---|---|---|
+| Red Wine Quality, real data: duplicates nobody injected | `duplicate_rows` | plain flow: CV MAE 0.047 and test MAE 0.067 better than on unseen data (10 seeds) | prefit: −0.012 and −0.001 (honest); MAE on unseen data 0.511 vs 0.505 |
+| California Housing, skewed target, log-transform (HGB) | `target_skew` | MAE 0.3125 | MAE 0.3074 (−1.6%) |
+| Breast Cancer + 20% duplicated rows (RF): old vs new CV | `duplicate_rows` | copies straddle folds: CV accuracy 0.9702 | duplicate-aware CV: 0.9604 (0.98 pts of inflation removed) |
+| Diabetes + injected leaked feature, remove it (linear) | `leakage_hint` | CV R² 0.9999 | 0.4892 |
+
+**The statistics are tested against references and by simulation** (`tests/test_stats_reference.py`): the
+corrected t-test reduces to scipy's paired t-test, TOST to two one-sided tests, Wilson intervals match scipy,
+the fast Spearman matches pandas, the weighted ROC/PR-AUC match scikit-learn. Comparing two copies of one
+learner that differ only in their seed (100 simulated data sets), the corrected test rejects 3% of the time
+where the naive paired test rejects 21%; the missingness permutation test rejects at about α when values are missing at
+random. Percentile bootstrap intervals of the skewness cover the true value about 92% of the time at n = 500,
+a little under the nominal 95%.
+
+## Speed
+
+`analyze` on 200,000 rows × 50 columns: about 6 s (0.3: 12.9 s); 20,000 × 300: about 8 s (0.3: 12.3 s) (one laptop core). The
+bootstrap is vectorized, rank correlations and single-feature scores use at most 50,000 rows
+(`ProfileOptions.association_rows`), and `verify` parallelizes folds once they are slow. The test suite runs in
+about 20 s with `pytest -n auto`.
 
 ## The HTML report
 
-`report.to_html(path)` writes one file with four sections:
-
-- **Summary** — target, task, development rows; how many questions await you and
-  how many decisions are critical or need review; one next step; the data
-  partition note.
-- **Actions** — what needs your attention (open questions, review items, and
-  conditional decisions an experiment verified or refuted), the questions with
-  their options (and an LLM suggestion awaiting your confirmation, if you ran
-  one), and the metric plan.
-- **Roadmap** — one short card per decision: status, title, one-line why with
-  the decisive number, one-line do, experiment summary, and at most one figure.
-  Evidence, experiment details, related figures and rule/benchmark details are
-  one click away inside the card.
-- **Details** — limitations, then collapsed: all diagnostics, findings,
-  evidence, dataset profile, manifest and history.
-
-No raw rows are embedded; category labels are shown only for low-cardinality
-columns (`ProfileOptions(redact_values=True)` hides them all). Charts use
-plotly.js: with `plotlyjs="cdn"` (default) the report is a single file but needs
-internet for the charts; `plotlyjs="inline"` embeds plotly.js (~5 MB, needs the
-`report` extra) for fully offline use; every chart also has a data table, which
-works offline either way.
+`report.to_html(path)` writes one file: **Summary** (three states, the next lines, the data partition),
+**Actions** (what needs you, the questions with their answer lines, the metric plan), **Roadmap** (one short card
+per decision: why with the decisive number, do, experiment, alternatives, one figure; evidence and rule details
+one click away) and **Details** (limitations, all diagnostics, findings, evidence, profile, manifest, history).
+No raw rows are embedded; category labels only for low-cardinality columns (`ProfileOptions(redact_values=True)`
+hides them). Charts use plotly.js from a CDN (`plotlyjs="inline"` for offline); every chart also has its data
+table.
 
 ## Optional LLM interpretation
 
 ```python
-report.llm_payload(pf.LLMConfig(share_column_names=False))   # inspect first
-report = report.interpret(pf.LLMConfig(provider="anthropic"))
-report = report.interpret(pf.LLMConfig(provider="local", model="llama3.1"))  # Ollama etc.
+report.llm_payload(pf.LLMConfig(share_column_names=False))     # inspect what would be sent
+report = report.interpret(pf.LLMConfig(provider="anthropic"))  # or "gemini", or "local" (Ollama etc.)
 ```
 
-The LLM receives only the computed report — never rows, never category labels —
-and must answer in a fixed JSON schema. It can summarize, prioritize existing
-decisions, suggest answers to open questions (shown as awaiting your
-confirmation, never applied) and raise *semantic* flags on column names, which
-are marked manual-review. Claims that cite unknown evidence or decision ids are
-dropped; `details.llm.dropped` says what was dropped and why, and
-`details.llm.raw_response` keeps the reply exactly as received. While the task is
-unconfirmed, the payload marks task-dependent items and the prompt tells the
-model not to build advice on them. Review items you closed with `resolve` are
-marked as closed, with your note (sent under the same rule as `context=`), so the
-model does not reopen them. With `share_column_names=False` columns are aliased and
-free-text messages are withheld; the report lists exactly what was sent. The
-free-text `context=` never changes a decision by itself. Without an LLM the
-report is complete.
-
-Provider status: the interpretation logic and the local OpenAI-compatible
-provider are tested (with a fake provider and a loopback server). The Anthropic
-and Gemini providers are thin wrappers that have **not** been exercised against
-the live APIs in this repository's tests.
-
-## After training
-
-`pf.review(y_true, y_pred, report, y_score=..., segments=..., X=test_X)` checks the
-roadmap's hypotheses against real errors, each against an explicit reference
-(e.g. "tails dominate" vs. what Gaussian errors would give), adds residual /
-confusion / precision–recall / segment analysis, and lists every assumption
-that was never verified (and the review items you closed, with your notes).
-
-Every headline metric carries a seeded 95% bootstrap interval; with `X=` exact
-duplicate rows in the test data are resampled together. After `verify`, the
-review also checks that the development CV estimate (`report.cv_estimate()`)
-lies inside the test interval — one test score is noisy, and the interval says
-how noisy before anyone reads a story into the gap.
-
----
-
-## Benchmark
-
-`python benchmarks/run.py` runs versioned fixture cases (synthetic data with one
-injected hazard each, plus datasets bundled with scikit-learn) and checks that
-each rule fires, stays silent, or reports *near threshold* as expected. Results,
-including failures, are written to `benchmarks/results/<manifest>.json|md`;
-`--verify` adds experiment outcomes on real datasets (a plain run keeps the
-committed experiment section). Reports cite a rule's "detection pass rate on
-benchmark <manifest>: k/n checks".
-
-Current manifest `2026.11-3`: 21/21 cases pass, including a split check that no
-exact duplicate lands on both sides of the holdout or of any CV fold (expected
-overlap 0). This is a detection pass rate on known-hazard fixtures — not a claim
-about real-world accuracy, nor about how often a decision improves a model.
-
-## Case studies
-
-`python examples/case_studies.py` (numbers below are from that script; fixed seeds):
-
-| study | rule | before | after |
-|---|---|---|---|
-| California Housing, skewed target, log-transform (HGB) | `target_skew` | MAE 0.3125 | MAE 0.3074 (−1.6%) |
-| Breast Cancer + 20% duplicated rows (RF): old vs new CV | `duplicate_rows` | 0.1 splitter, copies straddle folds: CV accuracy 0.9702 | 0.2 duplicate-aware CV: 0.9604 (0.98 pts of inflation removed; de-duplicated data: 0.9649) |
-| Diabetes + injected leaked feature, remove it (linear) | `leakage_hint` (critical) | CV R² 0.9999 | 0.4892 |
+The LLM receives only the computed report, never rows or category labels, and answers in a fixed JSON schema:
+a summary, priorities among existing decisions, suggested answers (shown, never applied) and semantic flags on
+column names. Claims that cite unknown ids are dropped (`details.llm.dropped`). Review items you closed are sent
+as closed, with your note. Without an LLM the report is complete. The Anthropic and Gemini providers are thin
+wrappers not exercised against the live APIs in this repository's tests.
 
 ## Scope and limitations
 
-- v1 covers tabular classification and regression. No images, text, time-series
-  forecasting, clustering or model selection.
-- Leakage screening sees single-feature association and numeric correlation
-  only; leakage through feature combinations, time, preprocessing or repeated
-  entities is not detected.
-- Column kinds and the task are inferred heuristically; check the schema table.
-- Experiments test one change at a time; interactions are not measured.
-- `groups` and `time_col` cannot be combined in v1.
-- Duplicates are matched exactly. Near-duplicates (a rounded value, one
-  differing column, an id column that makes copies distinct) are not detected
-  and can still straddle a split; pass `groups=` when rows share an entity.
-  The duplicate review item reports whether copies sit close together in row
-  order (a permutation test); that hints at re-entered records but cannot prove
-  it, and it says nothing once a file has been shuffled.
-- With `time_col`, the holdout is the latest period and CV is
-  `TimeSeriesSplit`; exact duplicates are *not* kept together there (time order
-  wins), so a copy can sit on both sides. The duplicate review item says so.
+- Tabular classification and regression. No images, text, forecasting, clustering or model selection.
+- Leakage screening sees single-feature association and numeric correlation only; leakage through feature
+  combinations, time, preprocessing or repeated entities is not detected.
+- **Relations between columns are not checked**: a column that is a product of two others (Telco
+  `TotalCharges` ≈ `tenure` × `MonthlyCharges`), or categorical columns that repeat each other ("No internet
+  service" in six columns). Both are reported by human EDAs of Telco and missed here.
+- Duplicates are matched exactly; near-duplicates are not detected. Pass `groups=` when rows share an entity.
+  Keeping copies on one side costs distinct training rows (the real-data table shows how many).
+- Column kinds and the task are inferred heuristically; check the first-look table.
+- Experiments test one change at a time; interactions are not measured. `groups` and `time_col` cannot be
+  combined. With `time_col`, exact duplicates are not kept together (time order wins).
 - Raw datetime, free-text and string-identifier columns are not encoded.
 
-Design notes: [ARCHITECTURE.md](https://github.com/hkln4/prefit/blob/main/ARCHITECTURE.md) · changes: [CHANGELOG.md](https://github.com/hkln4/prefit/blob/main/CHANGELOG.md) ·
-contributing: [CONTRIBUTING.md](https://github.com/hkln4/prefit/blob/main/CONTRIBUTING.md)
+## Repository
+
+```text
+prefit/            the library
+  profiling/         kinds, stats, missingness, tabular profile (measures, never concludes)
+  rules/             the versioned rule catalog and the metric policy (decides)
+  report/            the immutable report contract
+  render/            text, HTML, notebook view, tables
+  verify.py export.py posttrain.py splitters.py guard.py fingerprint.py figures.py api.py
+tests/             unit, golden, statistical reference, dirty data, real data (network), timing
+benchmarks/        detection benchmark, real-data benchmark, cached datasets, results, notebooks
+examples/          quickstart.py, case_studies.py, output/ (the example report)
+site/              the project page
+```
+
+Design notes: [ARCHITECTURE.md](ARCHITECTURE.md) · contributing: [CONTRIBUTING.md](CONTRIBUTING.md) ·
+benchmarks: [benchmarks/README.md](benchmarks/README.md)

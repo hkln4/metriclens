@@ -141,9 +141,8 @@ def test_change_task_keeps_what_still_applies():
     rep = pf.analyze(dev, "score", holdout=None)
     rep = rep.register_external_holdout(test, dev_df=dev, name="test set")
     rep = rep.resolve("d.duplicate_rows", "re-entered records; keep them, the split keeps copies together")
-    with pytest.raises(ValueError, match="change_task"):
-        rep.answer({"task": "regression"})
     reg = rep.change_task(dev, "regression")
+    assert rep.answer(task="regression").decisions == reg.decisions
     assert reg.task.value == "regression" and not reg.details.profile.task_inferred
     assert reg.details.manifest.external_holdout["name"] == "test set"
     assert reg.decision("d.duplicate_rows").status is DecisionStatus.REVIEWED

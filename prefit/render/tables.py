@@ -23,3 +23,27 @@ def decisions_table(report: Any) -> pd.DataFrame:
             })
     return pd.DataFrame(rows, columns=["stage", "status", "class", "decision", "why", "key evidence", "do",
                                        "experiment", "standard", "note", "id"])
+
+
+def first_look(report: Any) -> pd.DataFrame:
+    """One row per feature column: what prefit measured and which decisions mention it."""
+    p = report.details.profile
+    by_col: dict[str, list[str]] = {}
+    fcols = {f.id: f.columns for f in report.details.findings}
+    for d in report.decisions:
+        if d.standard:
+            continue
+        cols = {c for fid in d.finding_ids for c in fcols.get(fid, ())}
+        cols |= {c for eid in d.evidence_ids for c in report.details.evidence[eid].columns}
+        for c in cols:
+            by_col.setdefault(c, []).append(d.id)
+    rows = []
+    for c, cp in p.columns.items():
+        rows.append({
+            "column": c, "kind": cp.kind.value, "missing %": round(100 * cp.missing_fraction, 2),
+            "distinct": cp.cardinality, "skew": cp.stats.get("skew"),
+            "signal": cp.signal, "leak score": cp.association,
+            "decisions": ", ".join(sorted(set(by_col.get(c, [])))),
+        })
+    return pd.DataFrame(rows, columns=["column", "kind", "missing %", "distinct", "skew", "signal", "leak score",
+                                       "decisions"])

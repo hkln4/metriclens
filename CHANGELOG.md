@@ -4,6 +4,99 @@ All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/); before 1.0, minor versions may
 change the public API.
 
+## 0.4.0 — 2026-11-04
+
+Usability, missing values, speed and an honest benchmark. Checked against Telco
+Customer Churn (`benchmarks/notebooks/telco_churn.ipynb`) and Red Wine Quality;
+the rules changed here are listed with their new versions under "Changed".
+
+### Added
+- **The frame stays with the report.** `analyze(..., keep_data=True)` (default) keeps a reference (no copy,
+  never serialized); `verify()`, `holdout()`, `change_task(task)`, `register_external_holdout(test_df)`,
+  `export().fit()` and `review(model)` need no frame. It is fingerprint-checked on every use, so an in-place
+  edit after `analyze` raises. Passing the frame still works (and is required after `load_report`).
+- **Keyword answers.** `report.answer(task="regression", metric="mae")`; column questions take
+  `{column: True/False}` (`known_at_prediction={"x": False}`, `identifier=["user_id"]`,
+  `missing_is_zero={"TotalCharges": True}`); options accept short aliases (`mae`, `rmse`, `recall`,
+  `roc_auc`, ...). The dict form with question ids still works. `answer(task=...)` with a different task
+  re-runs the analysis on the same rows (see Fixed).
+- **Runnable next steps.** `report.next_steps()`, the notebook card, `print(report)` and the HTML summary
+  give one complete line per open item, then the rest of the flow (`verify`, `export().fit()`, `review`).
+- **Three states.** Every decision is *done*, *needs you* or *tested* (`Decision.state`); the card and the
+  text report group by them. Statuses and details stay in `decisions_table()`.
+- `ExportResult.fit(df=None)`: fits the recipe on the development rows (holdout excluded, exact feature
+  columns, missing targets dropped, time order respected).
+- `report.review(model, test_df=None)`: predicts with the model's own columns on the internal holdout (or
+  `test_df`, checked against a registered external holdout), passes scores for the positive class, and warns
+  when the same test data is reviewed twice in a session.
+- `report.show()` / `report.show("d.xxx")` for notebooks: the card, a first-look table and the figures behind
+  the decisions that need you (one decision with its evidence and figure). Color tokens are resolved in
+  Python; without plotly each figure shows its data table. `report.first_look()`: one row per column with kind,
+  missing %, distinct values, skew, signal, leak score and the decisions that mention it.
+- **Missing values, measured** (`profiling/missingness.py`, `ColumnProfile.missingness`): for every column
+  with at least 5 missing rows, the target in missing vs present rows (permutation test), the missing
+  indicator's single-feature score, a *structural* pattern (missing exactly where another column takes one
+  value), the feature that best separates missing rows, and the strongest rank correlation (what a model-based
+  imputer could use).
+- Rules `structural_missingness` v1 (a question: does missing mean 0 there? confirmed -> constant fill step),
+  `informative_missingness` v1 (a review item with the rates and the p-value, Holm across columns; replaces
+  the generic "check whether missingness is informative" item), `model_imputation` v1 (a conditional
+  decision: IterativeImputer vs median, tested by `verify`).
+- `Decision.alternatives`: the other ways to go and when each is right, for every conditional decision and
+  the new missingness decisions; shown in the text report, the HTML card and `show("d.xxx")`.
+- `ColumnProfile.signal`: a threshold-free single-feature strength (Gini = 2 AUC - 1 for classification,
+  R² for regression). On Telco the old score was 0 for every categorical column because none flips the
+  majority class; `signal` ranks Contract and tenure first. The leakage screen keeps its calibrated score.
+- Figures: target in missing vs present rows; row distance from each duplicate to its original.
+- Review: bootstrap intervals for ROC-AUC and PR-AUC (with duplicates resampled together), so the CV check
+  also runs for those metrics.
+- `Budget(n_jobs=None)`: automatic parallel folds in `verify` (serial until one cross-validation takes more
+  than 2 s, then all cores); results do not depend on it.
+- Benchmarks: `benchmarks/real_data.py` (plain flow vs prefit on five real datasets, several seeds, scored on a
+  final set neither flow saw; results in `benchmarks/results/real_data.md`), `benchmarks/real_datasets.py`
+  (cached loaders), `benchmarks/check_manifest.py` (CI: the committed benchmark must match the shipped rule
+  versions and the package version), five new fixture cases (manifest `2026.11-4`, 26 cases).
+- Tests: statistics against scipy/pandas references and by simulation (the corrected t-test rejects 3% of
+  100 equal-learner comparisons where the naive paired test rejects 21%; Wilson coverage; skewness bootstrap
+  coverage; permutation calibration), dirty-data kinds with Hypothesis, the suggested lines executed to the
+  end, real-data golden tests (network, cached), wall-clock bounds. `pytest -n auto` runs the suite in ~20 s.
+
+### Changed
+- Numbers stored as text are numeric: blanks and placeholders (`""`, `" "`, `NA`, `?`, `null`, ...) are
+  missing values, values with a leading zero stay codes. Telco's `TotalCharges` was a categorical column
+  with 6,531 categories and no missing values, and prefit proposed target-encoding it.
+- Rules: `task_confirmation` v4 asks only when the inference is ambiguous (an integer target with few
+  values); a text, boolean, binary or continuous target is not questioned. `high_missingness` v2 (no
+  generic review item), `unsupported_columns` v3 (a string column with a distinct value on every row is a
+  row identifier: information, not a review item), `temporal_order` v2, `id_like_columns` v2,
+  `leakage_hint` v3, `skewed_features` v4, `high_cardinality` v2, `class_imbalance` v2, `target_skew` v2,
+  `metric_policy` v2 (keywords, aliases, alternatives; same triggers and thresholds).
+- Speed: vectorized bootstrap (same random stream, same intervals), one Spearman matrix on at most 50,000
+  rows with a fast path for missing values (equal to pandas), the single-feature score on at most
+  `ProfileOptions.association_rows` (50,000) rows, vectorized category lookup. `analyze` on 200,000 x 50
+  went from 12.9 s to 6.1 s, on 20,000 x 300 from 12.3 s to 7.6 s (with the new missingness and signal
+  measurements included); `verify` with HistGradientBoosting on 7,000 rows from 17 s to 8 s.
+- Wilson intervals use the exact normal quantile (1.95996...) instead of 1.96.
+- `change_task(task, df=None)`: the task comes first; `change_task(df, task)` is still accepted.
+- The CV check in the review states its limit: leakage that inflates the CV and the test score alike passes it.
+
+### Fixed
+- `cv_estimate()` (and the review's CV check) described the base setup, not the exported recipe, when `verify`
+  verified a change: on Adult, with class weights verified, the CV estimate was 0.05 balanced accuracy below
+  the model's real score and the check would have reported a development/test mismatch. `verify` now scores
+  the recipe with every verified change on the same folds (`cv_estimate()["recipe"]` lists them). Found by
+  the real-data benchmark.
+- `change_task` (and so `answer(task=...)`) re-drew the internal holdout under the new task, so rows the
+  first analysis had profiled could land in the holdout. The holdout now keeps its rows; `profile.holdout`
+  records the task it was reserved under, so a loaded report re-derives the same rows.
+- Benchmark manifest `2026.11-3` was re-run with 0.3.0 rules without a new manifest number; results now
+  record the rule versions and CI refuses a mismatch.
+- `llm/anthropic.py` reads text blocks with `getattr(b, "text", "")`.
+
+### Repository
+- Scratch notebooks removed; the Wine Quality guide moved to `benchmarks/notebooks/wine_quality_guide.ipynb`,
+  next to the new `telco_churn.ipynb` (both tracked).
+
 ## 0.3.1 — 2026-11-03
 
 ### Fixed

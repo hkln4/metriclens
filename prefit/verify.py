@@ -144,12 +144,35 @@ def holm(pvals: list[float]) -> list[float]:
     return [float(a) for a in adj]
 
 
-def _score(model: Any, X: pd.DataFrame, y: pd.Series, splits: list, scorer: Any) -> np.ndarray:
+AUTO_PARALLEL_SECONDS = 2.0
+
+
+class _Jobs:
+    """n_jobs for cross_val_score. Automatic mode (None) starts serial and switches to
+    all cores after the first cross-validation that takes longer than AUTO_PARALLEL_SECONDS:
+    small data stays free of process start-up cost, large data gets the cores."""
+
+    def __init__(self, n_jobs: int | None) -> None:
+        self.auto = n_jobs is None
+        self.value: int | None = 1 if n_jobs is None else n_jobs
+
+    def observe(self, seconds: float) -> None:
+        if self.auto and seconds > AUTO_PARALLEL_SECONDS:
+            self.value = -1
+
+
+def _score(model: Any, X: pd.DataFrame, y: pd.Series, splits: list, scorer: Any,
+           jobs: _Jobs | None = None) -> np.ndarray:
     from sklearn.model_selection import cross_val_score
 
+    t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return cross_val_score(model, X, y, cv=splits, scoring=scorer, error_score="raise")
+        out = cross_val_score(model, X, y, cv=splits, scoring=scorer, error_score="raise",
+                              n_jobs=jobs.value if jobs else None)
+    if jobs:
+        jobs.observe(time.perf_counter() - t0)
+    return out
 
 
 def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budget,
@@ -193,6 +216,7 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
     families = [("user", estimator)] if estimator is not None else proxy_estimators(report.task)
 
     t0 = time.perf_counter()
+    jobs = _Jobs(budget.n_jobs)
     baseline: dict[str, Any] = {"metric": plan.dev_metric, "n_rows": int(len(df)), "n_folds": len(splits),
                                 "cv": cv_desc, "protocol": protocol,
                                 "provisional_metric": plan.dev_metric_provisional, "families": {}}
@@ -204,7 +228,7 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
         baseline["dummy"] = {"error": str(exc)}
     base_scores: dict[str, np.ndarray] = {}
     for fam, est in families:
-        sc = _score(build_model(p, base_steps, est), X, y, splits, scorer)
+        sc = _score(build_model(p, base_steps, est), X, y, splits, scorer, jobs)
         base_scores[fam] = sc
         baseline["families"][fam] = {"estimator": type(est).__name__, "mean": float(sc.mean()),
                                      "std": float(sc.std(ddof=1))}
@@ -224,7 +248,7 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
                 continue
             ts = time.perf_counter()
             try:
-                cand = _score(build_model(p, base_steps + [d.step], est), X, y, splits, scorer)
+                cand = _score(build_model(p, base_steps + [d.step], est), X, y, splits, scorer, jobs)
             except Exception as exc:
                 notes[d.id] = f"error: {exc}"
                 continue
@@ -251,6 +275,19 @@ def run_verification(report: Any, df: pd.DataFrame, estimator: Any, budget: Budg
         r["p_equivalence"] = a
     experiments = [Experiment(**r, outcome=classify_outcome(r["mean_diff"], r.get("p_adjusted"), r["min_effect"],
                                                             budget.alpha, r.get("p_equivalence"))) for r in raw]
+    # the recipe export() will build: base + every change your estimator verified, scored on the same folds,
+    # so the CV estimate describes the exported model (one change at a time never measured them together)
+    verified = [d for d in candidates if any(e.decision_id == d.id and e.family == "user" and e.outcome == "improved"
+                                             for e in experiments)]
+    if verified and estimator is not None:
+        steps = [d.step for d in verified if d.step is not None]
+        if len(steps) == 1:
+            sc = np.asarray(next(e.candidate_scores for e in experiments
+                                 if e.decision_id == verified[0].id and e.family == "user"), dtype=float)
+        else:
+            sc = _score(build_model(p, base_steps + steps, estimator), X, y, splits, scorer, jobs)
+        baseline["families"]["user"]["recipe"] = {"mean": float(np.mean(sc)), "std": float(np.std(sc, ddof=1)),
+                                                  "decisions": [d.id for d in verified]}
     baseline["seconds"] = round(time.perf_counter() - t0, 2)
     return experiments, baseline, notes
 
